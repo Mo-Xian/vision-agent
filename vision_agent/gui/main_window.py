@@ -1,0 +1,1140 @@
+"""主窗口：配置面板 + 视频预览 + 检测结果列表。"""
+
+import os
+import json
+from pathlib import Path
+from PySide6.QtCore import Qt, Slot, QSettings
+from PySide6.QtGui import QFont, QIcon
+from PySide6.QtWidgets import (
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox,
+    QLabel, QComboBox, QLineEdit, QPushButton, QSpinBox,
+    QDoubleSpinBox, QFileDialog, QTextEdit, QSplitter, QMessageBox,
+    QScrollArea, QSizePolicy, QDialog, QTabWidget, QFormLayout,
+    QProgressBar,
+)
+
+from ..sources import create_source
+from ..core.detector import Detector, DetectionResult
+from ..core.model_manager import ModelManager
+from ..core.state import StateManager
+from ..decision import RuleEngine, LLMEngine, TrainedEngine, PROVIDER_PRESETS, create_provider
+from ..data.recorder import DataRecorder
+from ..tools import ToolRegistry
+from ..tools.keyboard import KeyboardTool
+from ..tools.mouse import MouseTool
+from ..tools.api_call import ApiCallTool
+from ..tools.shell import ShellTool
+from ..agents.action_agent import ActionAgent
+from .video_widget import VideoWidget
+from .worker import DetectionWorker
+from .decision_train_worker import DecisionTrainWorker
+
+# 样式表
+STYLESHEET = """
+QMainWindow { background-color: #0f0f23; }
+QGroupBox {
+    background-color: #16213e;
+    border: 1px solid #0f3460; border-radius: 8px;
+    margin-top: 14px; padding: 12px; padding-top: 24px;
+    color: #e0e0e0; font-weight: bold; font-size: 13px;
+}
+QGroupBox::title {
+    subcontrol-origin: margin; left: 12px; padding: 0 6px; font-size: 14px;
+}
+QLabel { color: #c0c0c0; font-size: 13px; }
+QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
+    background-color: #1a1a2e; color: #e0e0e0;
+    border: 1px solid #0f3460; border-radius: 4px;
+    padding: 4px 8px; min-height: 24px; font-size: 13px;
+}
+QComboBox:focus, QLineEdit:focus { border-color: #e94560; }
+QComboBox::drop-down { border: none; width: 24px; }
+QPushButton {
+    border-radius: 6px; padding: 6px 12px;
+    font-size: 13px; font-weight: bold; min-height: 28px;
+}
+QPushButton#startBtn { background-color: #00b894; color: white; }
+QPushButton#startBtn:hover { background-color: #00a381; }
+QPushButton#startBtn:disabled { background-color: #555; }
+QPushButton#stopBtn { background-color: #e94560; color: white; }
+QPushButton#stopBtn:hover { background-color: #d63851; }
+QPushButton#stopBtn:disabled { background-color: #555; }
+QPushButton#browseBtn {
+    background-color: #0f3460; color: #e0e0e0;
+    padding: 4px 10px; min-height: 22px; font-size: 12px;
+}
+QTextEdit {
+    background-color: #1a1a2e; color: #a0e0a0;
+    border: 1px solid #0f3460; border-radius: 6px;
+    font-family: Consolas, monospace; font-size: 12px; padding: 4px;
+}
+QSplitter::handle { background-color: #0f3460; width: 2px; }
+QTabWidget::pane {
+    border: 1px solid #0f3460; border-top: none;
+    background-color: #16213e; border-radius: 0 0 6px 6px;
+}
+QTabBar::tab {
+    background: #1a1a2e; color: #c0c0c0; padding: 6px 14px;
+    border: 1px solid #0f3460; border-bottom: none;
+    border-radius: 4px 4px 0 0; font-size: 12px; margin-right: 2px;
+}
+QTabBar::tab:selected { background: #16213e; color: #e0e0e0; border-bottom: 1px solid #16213e; }
+QFormLayout { margin: 0; }
+"""
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Vision Agent - 实时目标检测")
+        self.setMinimumSize(1100, 700)
+        self.resize(1400, 820)
+        self.setStyleSheet(STYLESHEET)
+
+        self._worker: DetectionWorker | None = None
+        self._frame_count = 0
+        self._model_manager = ModelManager()
+        self._settings = QSettings("VisionAgent", "VisionAgent")
+        self._recorder: DataRecorder | None = None
+        self._train_worker: DecisionTrainWorker | None = None
+        self._init_ui()
+        self._scan_models()
+        self._load_settings()
+
+    def _init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(8)
+
+        splitter = QSplitter(Qt.Horizontal)
+        root_layout.addWidget(splitter)
+
+        # ===== 左侧面板 =====
+        left_panel = QWidget()
+        left_panel.setMinimumWidth(300)
+        left_panel.setMaximumWidth(420)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+
+        # -- 配置区域 (Tab) --
+        self.config_tabs = QTabWidget()
+        self._build_source_tab()
+        self._build_detector_tab()
+        self._build_decision_tab()
+        self._build_record_train_tab()
+        left_layout.addWidget(self.config_tabs, 0)
+
+        # -- 操作按钮 --
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(6)
+        self.start_btn = QPushButton("▶  启动")
+        self.start_btn.setObjectName("startBtn")
+        self.start_btn.clicked.connect(self._start_detection)
+        btn_layout.addWidget(self.start_btn)
+        self.stop_btn = QPushButton("■  停止")
+        self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self._stop_detection)
+        btn_layout.addWidget(self.stop_btn)
+        left_layout.addLayout(btn_layout)
+
+        # -- 状态栏 --
+        status_w = QWidget()
+        status_w.setStyleSheet("background-color: #16213e; border-radius: 6px; padding: 4px;")
+        status_layout = QVBoxLayout(status_w)
+        status_layout.setContentsMargins(8, 4, 8, 4)
+        status_layout.setSpacing(2)
+        self.fps_label = QLabel("FPS: --  |  推理: --ms")
+        self.fps_label.setStyleSheet("font-size: 14px; color: #00b894; font-weight: bold;")
+        status_layout.addWidget(self.fps_label)
+        self.count_label = QLabel("检测: 0  |  帧: 0")
+        self.count_label.setStyleSheet("font-size: 12px;")
+        status_layout.addWidget(self.count_label)
+        self.engine_status = QLabel("决策: 0  |  执行: 0  |  失败: 0")
+        self.engine_status.setStyleSheet("color: #74b9ff; font-size: 12px;")
+        status_layout.addWidget(self.engine_status)
+        left_layout.addWidget(status_w)
+
+        # -- 日志区域 (Tab) --
+        self.log_tabs = QTabWidget()
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_tabs.addTab(self.log_text, "检测")
+        self.decision_log_text = QTextEdit()
+        self.decision_log_text.setReadOnly(True)
+        self.log_tabs.addTab(self.decision_log_text, "决策")
+        left_layout.addWidget(self.log_tabs, 1)
+
+        splitter.addWidget(left_panel)
+
+        # ===== 右侧视频预览 =====
+        self.video_widget = VideoWidget()
+        splitter.addWidget(self.video_widget)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([360, 1000])
+
+        # 初始化 UI 状态
+        self.source_type.setCurrentText("video")
+        self._on_source_type_changed("video")
+
+    # ===== Tab 构建方法 =====
+
+    def _build_source_tab(self):
+        """构建「输入源」Tab。"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        self.source_type = QComboBox()
+        self.source_type.addItems(["screen", "camera", "video", "image"])
+        self.source_type.currentTextChanged.connect(self._on_source_type_changed)
+        form.addRow("类型", self.source_type)
+
+        layout.addLayout(form)
+
+        # 路径行
+        self.path_label = QLabel("路径")
+        layout.addWidget(self.path_label)
+        path_row = QHBoxLayout()
+        path_row.setSpacing(4)
+        self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("文件路径 / rtsp:// / http://")
+        path_row.addWidget(self.path_input)
+        self.browse_btn = QPushButton("...")
+        self.browse_btn.setObjectName("browseBtn")
+        self.browse_btn.setMaximumWidth(32)
+        self.browse_btn.clicked.connect(self._browse_file)
+        path_row.addWidget(self.browse_btn)
+        layout.addLayout(path_row)
+
+        loop_row = QHBoxLayout()
+        loop_row.addWidget(QLabel("循环"))
+        self.loop_combo = QComboBox()
+        self.loop_combo.addItems(["否", "是"])
+        loop_row.addWidget(self.loop_combo)
+        layout.addLayout(loop_row)
+
+        # 摄像头
+        self.camera_label = QLabel("设备号")
+        layout.addWidget(self.camera_label)
+        self.camera_device = QSpinBox()
+        self.camera_device.setRange(0, 10)
+        layout.addWidget(self.camera_device)
+
+        # 屏幕
+        self.monitor_label = QLabel("显示器")
+        layout.addWidget(self.monitor_label)
+        self.monitor_num = QSpinBox()
+        self.monitor_num.setRange(1, 5)
+        layout.addWidget(self.monitor_num)
+
+        layout.addStretch()
+        self.config_tabs.addTab(tab, "输入源")
+
+    def _build_detector_tab(self):
+        """构建「检测模型」Tab：检测器配置 + 模型管理合并。"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # 检测器配置
+        layout.addWidget(QLabel("检测模型"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItems(["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt"])
+        self.model_combo.setEditable(True)
+        layout.addWidget(self.model_combo)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(4)
+        self.load_model_btn = QPushButton("加载")
+        self.load_model_btn.setObjectName("browseBtn")
+        self.load_model_btn.clicked.connect(self._load_custom_model)
+        btn_row.addWidget(self.load_model_btn)
+        self.train_btn_open = QPushButton("训练")
+        self.train_btn_open.setStyleSheet("background-color: #6c5ce7; color: white; font-size: 12px;")
+        self.train_btn_open.clicked.connect(self._open_train_dialog)
+        btn_row.addWidget(self.train_btn_open)
+        layout.addLayout(btn_row)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+        self.conf_spin = QDoubleSpinBox()
+        self.conf_spin.setRange(0.05, 1.0)
+        self.conf_spin.setSingleStep(0.05)
+        self.conf_spin.setValue(0.50)
+        form.addRow("置信度", self.conf_spin)
+
+        self.imgsz_combo = QComboBox()
+        self.imgsz_combo.addItems(["320", "416", "512", "640", "960", "1280"])
+        self.imgsz_combo.setCurrentText("640")
+        form.addRow("分辨率", self.imgsz_combo)
+        layout.addLayout(form)
+
+        layout.addStretch()
+        self.config_tabs.addTab(tab, "检测模型")
+
+    def _build_decision_tab(self):
+        """构建「决策引擎」Tab。"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        form_top = QFormLayout()
+        form_top.setSpacing(6)
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["none", "rule", "trained", "llm"])
+        self.engine_combo.setCurrentText("rule")
+        self.engine_combo.currentTextChanged.connect(self._on_engine_changed)
+        form_top.addRow("引擎", self.engine_combo)
+        layout.addLayout(form_top)
+
+        # Trained 配置区域
+        self.trained_config_widget = QWidget()
+        trained_layout = QVBoxLayout(self.trained_config_widget)
+        trained_layout.setContentsMargins(0, 4, 0, 0)
+        trained_layout.setSpacing(6)
+
+        trained_layout.addWidget(QLabel("模型目录"))
+        trained_dir_row = QHBoxLayout()
+        self.trained_model_dir = QLineEdit()
+        self.trained_model_dir.setPlaceholderText("runs/decision/exp1")
+        self.trained_model_dir.setText("runs/decision/exp1")
+        trained_dir_row.addWidget(self.trained_model_dir)
+        trained_browse = QPushButton("...")
+        trained_browse.setObjectName("browseBtn")
+        trained_browse.setMaximumWidth(32)
+        trained_browse.clicked.connect(self._browse_trained_dir)
+        trained_dir_row.addWidget(trained_browse)
+        trained_layout.addLayout(trained_dir_row)
+
+        trained_form = QFormLayout()
+        self.trained_conf_spin = QDoubleSpinBox()
+        self.trained_conf_spin.setRange(0.05, 1.0)
+        self.trained_conf_spin.setSingleStep(0.05)
+        self.trained_conf_spin.setValue(0.30)
+        trained_form.addRow("置信阈值", self.trained_conf_spin)
+        trained_layout.addLayout(trained_form)
+
+        # 动作映射编辑区
+        trained_layout.addWidget(QLabel("动作映射 (语义名→按键):"))
+        self.trained_action_map_edit = QTextEdit()
+        self.trained_action_map_edit.setMaximumHeight(120)
+        self.trained_action_map_edit.setPlaceholderText(
+            '{\n  "attack": {"type": "key", "key": "a"},\n'
+            '  "retreat": {"type": "key", "key": "s"},\n'
+            '  "skill_1": {"type": "key", "key": "1"}\n}'
+        )
+        default_map = {
+            "attack": {"type": "key", "key": "a"},
+            "retreat": {"type": "key", "key": "s"},
+            "skill_1": {"type": "key", "key": "1"},
+            "skill_2": {"type": "key", "key": "2"},
+            "skill_3": {"type": "key", "key": "3"},
+        }
+        self.trained_action_map_edit.setPlainText(json.dumps(default_map, indent=2, ensure_ascii=False))
+        trained_layout.addWidget(self.trained_action_map_edit)
+
+        layout.addWidget(self.trained_config_widget)
+        self.trained_config_widget.setVisible(False)
+
+        # LLM 配置区域
+        self.llm_config_widget = QWidget()
+        llm_layout = QVBoxLayout(self.llm_config_widget)
+        llm_layout.setContentsMargins(0, 4, 0, 0)
+        llm_layout.setSpacing(6)
+
+        form = QFormLayout()
+        form.setSpacing(6)
+
+        self.llm_provider_combo = QComboBox()
+        self.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
+        self.llm_provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        form.addRow("供应商", self.llm_provider_combo)
+
+        self.llm_model_combo = QComboBox()
+        self.llm_model_combo.setEditable(True)
+        form.addRow("模型", self.llm_model_combo)
+
+        self.llm_api_key = QLineEdit()
+        self.llm_api_key.setEchoMode(QLineEdit.Password)
+        self.llm_api_key.setPlaceholderText("API Key 或留空用环境变量")
+        form.addRow("API Key", self.llm_api_key)
+
+        self.llm_base_url = QLineEdit()
+        self.llm_base_url.setPlaceholderText("留空用默认地址")
+        form.addRow("Base URL", self.llm_base_url)
+
+        self.llm_interval = QDoubleSpinBox()
+        self.llm_interval.setRange(0.1, 30.0)
+        self.llm_interval.setSingleStep(0.5)
+        self.llm_interval.setValue(1.0)
+        form.addRow("间隔(秒)", self.llm_interval)
+
+        llm_layout.addLayout(form)
+
+        self.llm_test_btn = QPushButton("测试连接")
+        self.llm_test_btn.setStyleSheet("background-color: #0984e3; color: white; font-size: 12px;")
+        self.llm_test_btn.clicked.connect(self._test_llm_connection)
+        llm_layout.addWidget(self.llm_test_btn)
+
+        layout.addWidget(self.llm_config_widget)
+        self.llm_config_widget.setVisible(False)
+
+        # 初始化供应商预设
+        self._on_provider_changed(self.llm_provider_combo.currentText())
+
+        layout.addStretch()
+        self.config_tabs.addTab(tab, "决策引擎")
+
+    def _build_record_train_tab(self):
+        """构建「录制/训练」Tab。"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # ── 录制区域 ──
+        rec_group = QGroupBox("数据录制")
+        rec_group.setStyleSheet(rec_group.styleSheet() + "QGroupBox { padding-top: 20px; margin-top: 10px; }")
+        rg = QVBoxLayout(rec_group)
+        rg.setSpacing(6)
+
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(QLabel("保存目录"))
+        self.rec_dir_input = QLineEdit("data/recordings")
+        dir_row.addWidget(self.rec_dir_input)
+        rec_browse = QPushButton("...")
+        rec_browse.setObjectName("browseBtn")
+        rec_browse.setMaximumWidth(32)
+        rec_browse.clicked.connect(lambda: self._browse_dir_to(self.rec_dir_input))
+        dir_row.addWidget(rec_browse)
+        rg.addLayout(dir_row)
+
+        session_row = QHBoxLayout()
+        session_row.addWidget(QLabel("会话名称"))
+        self.rec_session_input = QLineEdit()
+        self.rec_session_input.setPlaceholderText("留空自动生成时间戳")
+        session_row.addWidget(self.rec_session_input)
+        rg.addLayout(session_row)
+
+        rec_btn_row = QHBoxLayout()
+        self.rec_start_btn = QPushButton("● 开始录制")
+        self.rec_start_btn.setStyleSheet("background-color: #e17055; color: white;")
+        self.rec_start_btn.clicked.connect(self._toggle_recording)
+        rec_btn_row.addWidget(self.rec_start_btn)
+
+        self.auto_annotate_btn = QPushButton("LLM 自动标注")
+        self.auto_annotate_btn.setStyleSheet("background-color: #6c5ce7; color: white; font-size: 12px;")
+        self.auto_annotate_btn.clicked.connect(self._open_annotate_dialog)
+        rec_btn_row.addWidget(self.auto_annotate_btn)
+        rg.addLayout(rec_btn_row)
+
+        self.rec_status_label = QLabel("状态: 未录制")
+        self.rec_status_label.setStyleSheet("color: #636e72; font-size: 12px;")
+        rg.addWidget(self.rec_status_label)
+
+        layout.addWidget(rec_group)
+
+        # ── 训练区域 ──
+        train_group = QGroupBox("决策模型训练")
+        train_group.setStyleSheet(train_group.styleSheet() + "QGroupBox { padding-top: 20px; margin-top: 10px; }")
+        tg = QVBoxLayout(train_group)
+        tg.setSpacing(6)
+
+        data_row = QHBoxLayout()
+        data_row.addWidget(QLabel("数据目录"))
+        self.dt_data_dir = QLineEdit("data/recordings")
+        data_row.addWidget(self.dt_data_dir)
+        dt_browse = QPushButton("...")
+        dt_browse.setObjectName("browseBtn")
+        dt_browse.setMaximumWidth(32)
+        dt_browse.clicked.connect(lambda: self._browse_dir_to(self.dt_data_dir))
+        data_row.addWidget(dt_browse)
+        tg.addLayout(data_row)
+
+        out_row = QHBoxLayout()
+        out_row.addWidget(QLabel("输出目录"))
+        self.dt_output_dir = QLineEdit("runs/decision/exp1")
+        out_row.addWidget(self.dt_output_dir)
+        tg.addLayout(out_row)
+
+        param_row = QHBoxLayout()
+        param_row.addWidget(QLabel("模型"))
+        self.dt_model_type = QComboBox()
+        self.dt_model_type.addItems(["mlp", "rf"])
+        param_row.addWidget(self.dt_model_type)
+
+        param_row.addWidget(QLabel("轮数"))
+        self.dt_epochs_spin = QSpinBox()
+        self.dt_epochs_spin.setRange(10, 1000)
+        self.dt_epochs_spin.setValue(100)
+        param_row.addWidget(self.dt_epochs_spin)
+
+        param_row.addWidget(QLabel("学习率"))
+        self.dt_lr_spin = QDoubleSpinBox()
+        self.dt_lr_spin.setRange(0.0001, 0.1)
+        self.dt_lr_spin.setSingleStep(0.0005)
+        self.dt_lr_spin.setDecimals(4)
+        self.dt_lr_spin.setValue(0.001)
+        param_row.addWidget(self.dt_lr_spin)
+        tg.addLayout(param_row)
+
+        dt_btn_row = QHBoxLayout()
+        self.dt_preview_btn = QPushButton("预览数据")
+        self.dt_preview_btn.setStyleSheet("background-color: #0984e3; color: white; font-size: 12px;")
+        self.dt_preview_btn.clicked.connect(self._preview_data)
+        dt_btn_row.addWidget(self.dt_preview_btn)
+
+        self.dt_train_btn = QPushButton("▶ 开始训练")
+        self.dt_train_btn.setStyleSheet("background-color: #00b894; color: white;")
+        self.dt_train_btn.clicked.connect(self._start_decision_train)
+        dt_btn_row.addWidget(self.dt_train_btn)
+
+        self.dt_use_btn = QPushButton("使用模型")
+        self.dt_use_btn.setStyleSheet("background-color: #6c5ce7; color: white; font-size: 12px;")
+        self.dt_use_btn.setEnabled(False)
+        self.dt_use_btn.clicked.connect(self._use_trained_model)
+        dt_btn_row.addWidget(self.dt_use_btn)
+        tg.addLayout(dt_btn_row)
+
+        # 进度条
+        self.dt_progress = QProgressBar()
+        self.dt_progress.setRange(0, 100)
+        self.dt_progress.setValue(0)
+        self.dt_progress.setVisible(False)
+        tg.addWidget(self.dt_progress)
+
+        self.dt_status_label = QLabel("")
+        self.dt_status_label.setStyleSheet("color: #74b9ff; font-size: 12px;")
+        tg.addWidget(self.dt_status_label)
+
+        layout.addWidget(train_group)
+
+        layout.addStretch()
+        self.config_tabs.addTab(tab, "录制/训练")
+
+    # ── 录制/训练 事件处理 ──
+
+    def _browse_dir_to(self, line_edit: QLineEdit):
+        path = QFileDialog.getExistingDirectory(self, "选择目录")
+        if path:
+            line_edit.setText(path)
+
+    def _browse_trained_dir(self):
+        path = QFileDialog.getExistingDirectory(self, "选择模型目录")
+        if path:
+            self.trained_model_dir.setText(path)
+
+    @Slot()
+    def _open_annotate_dialog(self):
+        """打开 LLM 自动标注对话框。"""
+        from .annotate_dialog import AnnotateDialog
+        # 传递当前视频路径和模型路径作为默认值
+        default_video = self.path_input.text().strip() if self.source_type.currentText() == "video" else ""
+        default_model = self.model_combo.currentText()
+        dialog = AnnotateDialog(self, default_video=default_video, default_model=default_model)
+        dialog.exec()
+        # 标注完成后自动更新训练数据目录
+        save_path = dialog.get_save_path()
+        if save_path:
+            self.dt_data_dir.setText(str(Path(save_path).parent))
+            self._log(f"[标注] 数据已保存到 {save_path}")
+
+    @Slot()
+    def _toggle_recording(self):
+        if self._recorder and self._recorder.is_recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        if not self._worker:
+            QMessageBox.warning(self, "提示", "请先启动检测，再开始录制")
+            return
+
+        save_dir = self.rec_dir_input.text().strip() or "data/recordings"
+        session = self.rec_session_input.text().strip() or None
+
+        try:
+            self._recorder = DataRecorder(
+                save_dir=save_dir,
+                session_name=session,
+            )
+            self._recorder.on_start()
+            self._worker.agents.append(self._recorder)
+
+            self.rec_start_btn.setText("■ 停止录制")
+            self.rec_start_btn.setStyleSheet("background-color: #d63031; color: white;")
+            self.rec_status_label.setText(f"录制中... → {self._recorder.file_path}")
+            self.rec_status_label.setStyleSheet("color: #e17055; font-size: 12px; font-weight: bold;")
+            self._log(f"[录制] 开始 → {self._recorder.file_path}")
+
+            # 启动定时器更新录制计数
+            from PySide6.QtCore import QTimer
+            self._rec_timer = QTimer(self)
+            self._rec_timer.timeout.connect(self._update_rec_status)
+            self._rec_timer.start(1000)
+        except Exception as e:
+            QMessageBox.critical(self, "录制失败", str(e))
+
+    def _stop_recording(self):
+        if not self._recorder:
+            return
+
+        if hasattr(self, '_rec_timer'):
+            self._rec_timer.stop()
+
+        # 从 worker 移除
+        if self._worker and self._recorder in self._worker.agents:
+            self._worker.agents.remove(self._recorder)
+
+        count = self._recorder.sample_count
+        path = self._recorder.file_path
+        self._recorder.on_stop()
+
+        self.rec_start_btn.setText("● 开始录制")
+        self.rec_start_btn.setStyleSheet("background-color: #e17055; color: white;")
+        self.rec_status_label.setText(f"录制完成: {count} 条样本 → {path}")
+        self.rec_status_label.setStyleSheet("color: #00b894; font-size: 12px;")
+        self._log(f"[录制] 停止, {count} 条样本已保存")
+
+        # 自动填充训练数据目录
+        if path:
+            self.dt_data_dir.setText(str(path.parent))
+
+        self._recorder = None
+
+    @Slot()
+    def _update_rec_status(self):
+        if self._recorder and self._recorder.is_recording:
+            self.rec_status_label.setText(
+                f"录制中... {self._recorder.sample_count} 条样本 → {self._recorder.file_path}"
+            )
+
+    @Slot()
+    def _preview_data(self):
+        """预览录制数据概况。"""
+        data_dir = self.dt_data_dir.text().strip()
+        if not data_dir:
+            QMessageBox.warning(self, "提示", "请指定数据目录")
+            return
+        try:
+            from ..data.dataset import ActionDataset
+            dataset = ActionDataset(data_dir)
+            total = dataset.load()
+            if total == 0:
+                QMessageBox.information(self, "数据预览", f"目录 {data_dir} 中没有找到录制数据(.jsonl)")
+                return
+            summary = dataset.summary()
+            lines = [f"总样本数: {summary['total']}", ""]
+
+            lines.append("动作分布:")
+            for action, count in summary.get("action_distribution", {}).items():
+                pct = count / summary["total"] * 100
+                lines.append(f"  {action}: {count} ({pct:.1f}%)")
+
+            lines.append("")
+            lines.append("检测类别:")
+            for cls, count in summary.get("detection_classes", {}).items():
+                lines.append(f"  {cls}: {count}")
+
+            QMessageBox.information(self, "数据预览", "\n".join(lines))
+        except Exception as e:
+            QMessageBox.critical(self, "错误", str(e))
+
+    @Slot()
+    def _start_decision_train(self):
+        data_dir = self.dt_data_dir.text().strip()
+        output_dir = self.dt_output_dir.text().strip()
+        if not data_dir:
+            QMessageBox.warning(self, "提示", "请指定数据目录")
+            return
+
+        self.dt_train_btn.setEnabled(False)
+        self.dt_use_btn.setEnabled(False)
+        self.dt_progress.setVisible(True)
+        self.dt_progress.setValue(0)
+        self.dt_status_label.setText("准备中...")
+
+        model_type = self.dt_model_type.currentText()
+        self._train_worker = DecisionTrainWorker(
+            data_dir=data_dir,
+            output_dir=output_dir,
+            model_type=model_type,
+            epochs=self.dt_epochs_spin.value(),
+            lr=self.dt_lr_spin.value(),
+        )
+        self._train_worker.log_message.connect(self._on_dt_log)
+        self._train_worker.progress.connect(self._on_dt_progress)
+        self._train_worker.finished_ok.connect(self._on_dt_finished)
+        self._train_worker.finished_err.connect(self._on_dt_error)
+        self._train_worker.start()
+        self._log("[训练] 决策模型训练开始")
+
+    @Slot(str)
+    def _on_dt_log(self, msg: str):
+        self._log(f"[训练] {msg}")
+
+    @Slot(int, int, float, float, float)
+    def _on_dt_progress(self, epoch: int, total: int, loss: float,
+                        train_acc: float, val_acc: float):
+        pct = int(epoch / total * 100) if total > 0 else 0
+        self.dt_progress.setValue(pct)
+        self.dt_status_label.setText(
+            f"Epoch {epoch}/{total}  loss={loss:.4f}  "
+            f"train={train_acc:.3f}  val={val_acc:.3f}"
+        )
+
+    @Slot(str, dict)
+    def _on_dt_finished(self, model_dir: str, metrics: dict):
+        self.dt_train_btn.setEnabled(True)
+        self.dt_use_btn.setEnabled(True)
+        self.dt_progress.setValue(100)
+        val_acc = metrics.get("best_val_acc", 0)
+        train_acc = metrics.get("final_train_acc", 0)
+        epochs = metrics.get("epochs_trained", "?")
+        self.dt_status_label.setText(
+            f"训练完成! val={val_acc:.3f} train={train_acc:.3f} ({epochs} epochs)"
+        )
+        self.dt_status_label.setStyleSheet("color: #00b894; font-size: 12px; font-weight: bold;")
+        self._log(f"[训练] 完成 → {model_dir} (val_acc={val_acc:.4f})")
+        self._train_worker = None
+
+    @Slot(str)
+    def _on_dt_error(self, error: str):
+        self.dt_train_btn.setEnabled(True)
+        self.dt_progress.setVisible(False)
+        self.dt_status_label.setText(f"训练失败: {error}")
+        self.dt_status_label.setStyleSheet("color: #d63031; font-size: 12px;")
+        QMessageBox.critical(self, "训练失败", error)
+        self._train_worker = None
+
+    @Slot()
+    def _use_trained_model(self):
+        """将训练好的模型应用到决策引擎。"""
+        model_dir = self.dt_output_dir.text().strip()
+        self.engine_combo.setCurrentText("trained")
+        self.trained_model_dir.setText(model_dir)
+        self._log(f"[引擎] 已切换到 trained 模式: {model_dir}")
+        QMessageBox.information(self, "已应用", f"决策引擎已切换为 trained\n模型: {model_dir}\n\n下次启动检测时生效")
+
+    # ===== 事件处理 =====
+
+    def _on_source_type_changed(self, source_type: str):
+        is_video = source_type == "video"
+        is_camera = source_type == "camera"
+        is_screen = source_type == "screen"
+        is_image = source_type == "image"
+
+        self.path_label.setVisible(is_video or is_image)
+        self.path_input.setVisible(is_video or is_image)
+        self.browse_btn.setVisible(is_video or is_image)
+        self.loop_combo.setVisible(is_video or is_image)
+
+        if is_image:
+            self.path_label.setText("图片路径 / 目录")
+        else:
+            self.path_label.setText("路径 / 流地址")
+
+        self.camera_label.setVisible(is_camera)
+        self.camera_device.setVisible(is_camera)
+        self.monitor_label.setVisible(is_screen)
+        self.monitor_num.setVisible(is_screen)
+
+    def _browse_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择文件", "",
+            "视频/图片 (*.mp4 *.avi *.mkv *.mov *.flv *.wmv *.jpg *.png *.bmp);;所有文件 (*)"
+        )
+        if path:
+            self.path_input.setText(path)
+
+    def _build_source_config(self) -> dict:
+        source_type = self.source_type.currentText()
+        config = {"type": source_type}
+        if source_type == "video":
+            config["video"] = {
+                "path": self.path_input.text().strip(),
+                "loop": self.loop_combo.currentIndex() == 1,
+            }
+        elif source_type == "camera":
+            config["camera"] = {"device": self.camera_device.value()}
+        elif source_type == "screen":
+            config["screen"] = {"monitor": self.monitor_num.value()}
+        elif source_type == "image":
+            config["image"] = {
+                "path": self.path_input.text().strip(),
+                "loop": self.loop_combo.currentIndex() == 1,
+            }
+        return config
+
+    @Slot(str)
+    def _on_engine_changed(self, engine_type: str):
+        self.trained_config_widget.setVisible(engine_type == "trained")
+        self.llm_config_widget.setVisible(engine_type == "llm")
+
+    @Slot(str)
+    def _on_provider_changed(self, provider_name: str):
+        preset = PROVIDER_PRESETS.get(provider_name, {})
+        self.llm_model_combo.clear()
+        self.llm_model_combo.addItems(preset.get("models", []))
+        self.llm_base_url.setText(preset.get("base_url", ""))
+        env_key = preset.get("api_key_env", "")
+        if env_key and os.environ.get(env_key):
+            self.llm_api_key.setPlaceholderText(f"已从 {env_key} 读取")
+        else:
+            self.llm_api_key.setPlaceholderText(f"API Key" + (f" 或设置 {env_key}" if env_key else ""))
+
+    @Slot()
+    def _test_llm_connection(self):
+        provider_name = self.llm_provider_combo.currentText()
+        api_key = self._get_llm_api_key()
+        model = self.llm_model_combo.currentText()
+        base_url = self.llm_base_url.text().strip()
+
+        if not api_key and provider_name != "ollama":
+            QMessageBox.warning(self, "提示", "请输入 API Key")
+            return
+
+        self.llm_test_btn.setEnabled(False)
+        self.llm_test_btn.setText("测试中...")
+        try:
+            provider = create_provider(provider_name, api_key or "ollama", model, base_url)
+            ok = provider.test_connection()
+            if ok:
+                QMessageBox.information(self, "成功", f"{provider_name} 连接成功!\n模型: {model}")
+                self._log(f"LLM 连接测试成功: {provider_name}/{model}")
+            else:
+                QMessageBox.warning(self, "失败", "连接测试失败，请检查配置")
+        except ImportError as e:
+            pkg = "anthropic" if provider_name == "claude" else "openai"
+            QMessageBox.critical(self, "缺少依赖", f"需要安装: pip install {pkg}\n\n{e}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"连接失败:\n{e}")
+        finally:
+            self.llm_test_btn.setEnabled(True)
+            self.llm_test_btn.setText("测试连接")
+
+    def _get_llm_api_key(self) -> str:
+        key = self.llm_api_key.text().strip()
+        if key:
+            return key
+        provider_name = self.llm_provider_combo.currentText()
+        env_key = PROVIDER_PRESETS.get(provider_name, {}).get("api_key_env", "")
+        return os.environ.get(env_key, "") if env_key else ""
+
+    # ===== Agent 构建 =====
+
+    def _build_agents(self) -> list:
+        engine_type = self.engine_combo.currentText()
+        if engine_type == "none":
+            return []
+
+        registry = ToolRegistry()
+        registry.register(KeyboardTool())
+        registry.register(MouseTool())
+        registry.register(ApiCallTool())
+        registry.register(ShellTool())
+
+        if engine_type == "rule":
+            engine = RuleEngine()
+        elif engine_type == "trained":
+            model_dir = self.trained_model_dir.text().strip() or "runs/decision/exp1"
+            # 解析动作映射
+            action_key_map = {}
+            map_text = self.trained_action_map_edit.toPlainText().strip()
+            if map_text:
+                try:
+                    action_key_map = json.loads(map_text)
+                except json.JSONDecodeError as e:
+                    self._log(f"[警告] 动作映射 JSON 格式错误: {e}，将使用默认")
+            try:
+                engine = TrainedEngine(
+                    model_dir=model_dir,
+                    confidence_threshold=self.trained_conf_spin.value(),
+                    action_key_map=action_key_map,
+                )
+                self._log(f"Trained 引擎: {model_dir}")
+                if action_key_map:
+                    self._log(f"动作映射: {list(action_key_map.keys())}")
+            except Exception as e:
+                self._log(f"[错误] 加载 Trained 引擎失败: {e}")
+                return []
+        elif engine_type == "llm":
+            api_key = self._get_llm_api_key()
+            provider_name = self.llm_provider_combo.currentText()
+            model = self.llm_model_combo.currentText()
+            base_url = self.llm_base_url.text().strip()
+
+            if not api_key and provider_name != "ollama":
+                self._log("[警告] API Key 未设置，LLM 引擎不可用")
+                return []
+
+            try:
+                provider = create_provider(provider_name, api_key or "ollama", model, base_url)
+            except Exception as e:
+                self._log(f"[错误] 创建 LLM Provider 失败: {e}")
+                return []
+
+            engine = LLMEngine(
+                provider=provider,
+                tools_schema=registry.to_claude_tools(),
+                system_prompt="你是一个视觉AI助手，根据画面检测结果决定下一步动作。只在需要时才调用工具。",
+                decision_interval=self.llm_interval.value(),
+            )
+            engine.set_log_callback(self._decision_log_callback)
+            self._log(f"LLM 引擎: {provider_name}/{model}")
+        else:
+            return []
+
+        state_mgr = StateManager()
+        agent = ActionAgent(
+            decision_engine=engine,
+            tool_registry=registry,
+            state_manager=state_mgr,
+            on_log=self._decision_log_callback,
+        )
+        self._log(f"Agent 就绪 ({engine_type}, 工具: {registry.tool_names})")
+        return [agent]
+
+    # ===== 检测控制 =====
+
+    @Slot()
+    def _start_detection(self):
+        source_config = self._build_source_config()
+        if source_config["type"] in ("video", "image"):
+            key = source_config["type"]
+            path = source_config[key]["path"]
+            if not path:
+                QMessageBox.warning(self, "提示", "请输入路径")
+                return
+
+        try:
+            source = create_source(source_config)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"创建视频源失败:\n{e}")
+            return
+
+        detector = Detector(
+            model=self.model_combo.currentText(),
+            confidence=self.conf_spin.value(),
+            imgsz=int(self.imgsz_combo.currentText()),
+        )
+
+        agents = self._build_agents()
+        self._frame_count = 0
+        self.log_text.clear()
+        self.decision_log_text.clear()
+        self._log("启动检测...")
+
+        self._worker = DetectionWorker(source, detector, agents=agents)
+        self._worker.frame_ready.connect(self._on_frame_ready)
+        self._worker.fps_updated.connect(self._on_fps_updated)
+        self._worker.error.connect(self._on_error)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.agent_stats_updated.connect(self._on_agent_stats)
+        self._worker.decision_log.connect(self._on_decision_log)
+        self._worker.start()
+
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+
+    @Slot()
+    def _stop_detection(self):
+        if self._worker:
+            self._log("正在停止...")
+            self._worker.stop()
+
+    # ===== 信号槽 =====
+
+    @Slot(object, object)
+    def _on_frame_ready(self, frame, result: DetectionResult):
+        self._frame_count += 1
+        self.video_widget.update_frame(frame, result)
+        self.count_label.setText(
+            f"检测: {len(result.detections)}  |  帧: {self._frame_count}"
+        )
+        if self._frame_count % 30 == 1 and result.detections:
+            names = [f"{d.class_name}({d.confidence:.2f})" for d in result.detections[:5]]
+            self._log(f"[F{self._frame_count}] {', '.join(names)}")
+
+    @Slot(float, float)
+    def _on_fps_updated(self, fps: float, inference_ms: float):
+        self.fps_label.setText(f"FPS: {fps:.1f}  |  推理: {inference_ms:.1f}ms")
+
+    @Slot(str)
+    def _on_error(self, msg: str):
+        self._log(f"[错误] {msg}")
+
+    @Slot(dict)
+    def _on_agent_stats(self, stats: dict):
+        self.engine_status.setText(
+            f"决策: {stats.get('decisions', 0)}  |  "
+            f"执行: {stats.get('actions_executed', 0)}  |  "
+            f"失败: {stats.get('actions_failed', 0)}"
+        )
+
+    @Slot()
+    def _on_worker_finished(self):
+        # 自动停止录制
+        if self._recorder and self._recorder.is_recording:
+            self._stop_recording()
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        self._log("检测已停止")
+        self._worker = None
+
+    def _decision_log_callback(self, msg: str):
+        if self._worker:
+            self._worker.decision_log.emit(msg)
+
+    @Slot(str)
+    def _on_decision_log(self, msg: str):
+        import time
+        ts = time.strftime("%H:%M:%S")
+        self.decision_log_text.append(f"[{ts}] {msg}")
+        scrollbar = self.decision_log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def _log(self, text: str):
+        self.log_text.append(text)
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    # ===== 模型管理 =====
+
+    def _scan_models(self):
+        """扫描训练产出的模型，加入检测模型下拉框。"""
+        import glob
+        existing = [self.model_combo.itemText(i) for i in range(self.model_combo.count())]
+        for best in glob.glob("runs/**/best.pt", recursive=True):
+            best = best.replace("\\", "/")
+            if best not in existing:
+                parts = best.split("/")
+                label = next((p for p in parts if p not in ("runs", "detect", "train", "weights", "best.pt")), "custom")
+                self.model_combo.addItem(f"{best}")
+                existing.append(best)
+
+    @Slot()
+    def _load_custom_model(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择模型文件", "",
+            "PyTorch 模型 (*.pt);;ONNX 模型 (*.onnx);;所有文件 (*)"
+        )
+        if path:
+            self.model_combo.setEditText(path)
+            self._log(f"已加载: {path}")
+
+    @Slot()
+    def _open_train_dialog(self):
+        from .train_dialog import TrainDialog
+        dialog = TrainDialog(self)
+        if dialog.exec() == QDialog.Accepted:
+            model_path = dialog.get_model_path()
+            if model_path:
+                self.model_combo.setEditText(model_path)
+                self._log(f"训练模型: {model_path}")
+
+    # ===== 设置保存/加载 =====
+
+    def _save_settings(self):
+        s = self._settings
+        s.setValue("source/type", self.source_type.currentText())
+        s.setValue("source/path", self.path_input.text())
+        s.setValue("source/loop", self.loop_combo.currentIndex())
+        s.setValue("source/camera", self.camera_device.value())
+        s.setValue("source/monitor", self.monitor_num.value())
+        s.setValue("detector/model", self.model_combo.currentText())
+        s.setValue("detector/confidence", self.conf_spin.value())
+        s.setValue("detector/imgsz", self.imgsz_combo.currentText())
+        s.setValue("decision/engine", self.engine_combo.currentText())
+        s.setValue("decision/trained_dir", self.trained_model_dir.text())
+        s.setValue("decision/trained_conf", self.trained_conf_spin.value())
+        s.setValue("decision/trained_action_map", self.trained_action_map_edit.toPlainText())
+        s.setValue("recorder/dir", self.rec_dir_input.text())
+        s.setValue("train/data_dir", self.dt_data_dir.text())
+        s.setValue("train/output_dir", self.dt_output_dir.text())
+        s.setValue("train/model_type", self.dt_model_type.currentText())
+        s.setValue("train/epochs", self.dt_epochs_spin.value())
+        s.setValue("train/lr", self.dt_lr_spin.value())
+        s.setValue("decision/provider", self.llm_provider_combo.currentText())
+        s.setValue("decision/model", self.llm_model_combo.currentText())
+        s.setValue("decision/base_url", self.llm_base_url.text())
+        s.setValue("decision/interval", self.llm_interval.value())
+        api_key = self.llm_api_key.text().strip()
+        if api_key:
+            import base64
+            s.setValue("decision/api_key_b64", base64.b64encode(api_key.encode()).decode())
+        else:
+            s.remove("decision/api_key_b64")
+
+    def _load_settings(self):
+        s = self._settings
+        if s.value("source/type"):
+            self.source_type.setCurrentText(s.value("source/type"))
+        if s.value("source/path"):
+            self.path_input.setText(s.value("source/path"))
+        if s.value("source/loop") is not None:
+            self.loop_combo.setCurrentIndex(int(s.value("source/loop", 0)))
+        if s.value("source/camera") is not None:
+            self.camera_device.setValue(int(s.value("source/camera", 0)))
+        if s.value("source/monitor") is not None:
+            self.monitor_num.setValue(int(s.value("source/monitor", 1)))
+        if s.value("detector/model"):
+            self.model_combo.setEditText(s.value("detector/model"))
+        if s.value("detector/confidence") is not None:
+            self.conf_spin.setValue(float(s.value("detector/confidence", 0.5)))
+        if s.value("detector/imgsz"):
+            self.imgsz_combo.setCurrentText(s.value("detector/imgsz"))
+        if s.value("decision/engine"):
+            self.engine_combo.setCurrentText(s.value("decision/engine"))
+        if s.value("decision/trained_dir"):
+            self.trained_model_dir.setText(s.value("decision/trained_dir"))
+        if s.value("decision/trained_conf") is not None:
+            self.trained_conf_spin.setValue(float(s.value("decision/trained_conf", 0.3)))
+        if s.value("decision/trained_action_map"):
+            self.trained_action_map_edit.setPlainText(s.value("decision/trained_action_map"))
+        if s.value("recorder/dir"):
+            self.rec_dir_input.setText(s.value("recorder/dir"))
+        if s.value("train/data_dir"):
+            self.dt_data_dir.setText(s.value("train/data_dir"))
+        if s.value("train/output_dir"):
+            self.dt_output_dir.setText(s.value("train/output_dir"))
+        if s.value("train/model_type"):
+            self.dt_model_type.setCurrentText(s.value("train/model_type"))
+        if s.value("train/epochs") is not None:
+            self.dt_epochs_spin.setValue(int(s.value("train/epochs", 100)))
+        if s.value("train/lr") is not None:
+            self.dt_lr_spin.setValue(float(s.value("train/lr", 0.001)))
+        if s.value("decision/provider"):
+            self.llm_provider_combo.setCurrentText(s.value("decision/provider"))
+        if s.value("decision/model"):
+            self.llm_model_combo.setCurrentText(s.value("decision/model"))
+        if s.value("decision/base_url"):
+            self.llm_base_url.setText(s.value("decision/base_url"))
+        if s.value("decision/interval") is not None:
+            self.llm_interval.setValue(float(s.value("decision/interval", 1.0)))
+        api_key_b64 = s.value("decision/api_key_b64")
+        if api_key_b64:
+            try:
+                import base64
+                self.llm_api_key.setText(base64.b64decode(api_key_b64).decode())
+            except Exception:
+                pass
+
+    def closeEvent(self, event):
+        self._save_settings()
+        if self._worker:
+            self._worker.stop()
+        event.accept()

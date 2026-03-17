@@ -1,0 +1,103 @@
+# Vision Agent Configuration
+
+# 视频源配置
+source:
+  # 类型: screen | camera | video | image
+  type: video
+  # 屏幕捕获配置
+  screen:
+    monitor: 1          # 显示器编号
+    region: null         # 捕获区域 [x, y, w, h]，null 为全屏
+    fps: 30
+  # 摄像头配置
+  camera:
+    device: 0
+    width: 1280
+    height: 720
+    fps: 30
+  # 视频文件配置
+  video:
+    path: "your_video.mp4"
+    loop: true
+  # 图片配置
+  image:
+    path: "datasets/your_dataset/train/images"
+    loop: false
+
+# 模型管理
+models:
+  default: yolov8n                # 默认使用的模型名称
+  registry:
+    yolov8n: "yolov8n.pt"
+    # 自定义模型示例:
+    # custom: "runs/detect/your_model/train/weights/best.pt"
+
+# 检测器配置
+detector:
+  model: yolov8n.pt               # 模型文件路径
+  confidence: 0.5       # 置信度阈值
+  iou: 0.45             # NMS IoU 阈值
+  classes: null          # 过滤类别 ID 列表，null 为全部
+  device: null           # 推理设备: null(自动), cpu, cuda:0
+  imgsz: 640            # 推理分辨率
+
+# 数据录制配置
+recorder:
+  enabled: false                        # 是否启用录制（或用 --record 命令行开关）
+  save_dir: "data/recordings"           # 录制数据保存目录
+  session_name: null                    # 会话名，null=自动时间戳
+  record_mouse_move: false              # 是否录制鼠标移动（数据量大）
+  max_detection_age: 0.5                # 检测结果关联超时(秒)
+
+# 决策引擎配置
+decision:
+  engine: rule            # rule | llm | trained | none
+  rule:
+    first_match: true     # true=第一条匹配即返回, false=收集所有
+  trained:
+    model_dir: "runs/decision/exp1"     # 训练产出目录
+    confidence_threshold: 0.3           # 低于此置信度不执行
+    # 语义动作 → 实际操作映射（LLM 标注的动作名映射到真实按键）
+    # type: key(键盘), click(鼠标), none(不执行)
+    # idle 类动作自动跳过，无需配置
+    action_key_map:
+      attack: { type: key, key: a }
+      retreat: { type: key, key: s }
+      skill_1: { type: key, key: "1" }
+      skill_2: { type: key, key: "2" }
+      skill_3: { type: key, key: "3" }
+      move_forward: { type: key, key: w }
+      move_left: { type: key, key: a }
+      move_right: { type: key, key: d }
+  llm:
+    # 供应商: claude | openai | deepseek | qwen | ollama | custom
+    provider: "claude"
+    model: "claude-sonnet-4-20250514"
+    api_key_env: "ANTHROPIC_API_KEY"   # 从环境变量读取
+    base_url: ""                       # 自定义 API 地址（留空使用默认）
+    system_prompt: "你是一个视觉AI助手，根据画面检测结果决定下一步动作。"
+    decision_interval: 1.0             # 最小调用间隔(秒)
+    max_tokens: 1024
+
+# 工具配置
+tools:
+  enabled:
+    - keyboard
+    - mouse
+    - api_call
+    - shell
+  shell:
+    allowed_commands: null    # null=不限制, 或指定白名单列表
+
+# WebSocket 服务配置
+server:
+  host: "0.0.0.0"
+  port: 8765
+
+# 可视化配置
+visualizer:
+  enabled: true
+  window_name: "Vision Agent"
+  show_fps: true
+  show_labels: true
+  show_confidence: true

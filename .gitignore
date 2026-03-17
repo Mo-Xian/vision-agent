@@ -1,0 +1,40 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Models & weights
+*.pt
+*.onnx
+*.pth
+
+# Virtual environment
+venv/
+.venv/
+
+# Environment & secrets
+.env
+.env.*
+
+# Datasets & training data (large/private)
+datasets/
+data/recordings/
+
+# Training runs & outputs
+runs/
+
+# Test videos
+*.mp4
+*.avi
+*.mkv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
