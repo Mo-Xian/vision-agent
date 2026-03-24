@@ -16,10 +16,12 @@
 ## 架构
 
 ```
-感知层:  Sources(screen/camera/video/image) → ModelManager → Detector → DetectionResult
-决策层:  StateManager(跨帧状态) → DecisionEngine(Rule/LLM/Trained) → Action
+感知层:  Sources → ModelManager → Detector → DetectionResult
+         SceneClassifier(场景识别) → ROIExtractor(区域特征)
+决策层:  StateManager(状态/空间/ROI) → DecisionEngine → Action
+         Rule | Trained(MLP/RF) | LLM | Hierarchical(3层) | RL(DQN)
 执行层:  ToolRegistry → Tools(keyboard/mouse/api_call/shell) → ActionAgent
-协调层:  Pipeline 串联 + WebSocket + GUI
+协调层:  AutoPilot(场景→Profile→训练→热加载) + Pipeline + WebSocket + GUI
 ```
 
 ## 核心文件
@@ -29,23 +31,32 @@
 | `main.py` | CLI 入口 |
 | `gui_app.py` | PySide6 GUI 入口 |
 | `config.yaml` | 全局配置 |
+| `profiles/*.yaml` | 场景 Profile 配置（王者荣耀/FPS/桌面） |
 | `vision_agent/core/detector.py` | YOLO 检测器 |
-| `vision_agent/core/pipeline.py` | 主流程管线 |
+| `vision_agent/core/pipeline.py` | 主流程管线（支持热切换决策引擎） |
 | `vision_agent/core/model_manager.py` | 模型注册/切换 |
-| `vision_agent/core/state.py` | 跨帧场景状态 |
+| `vision_agent/core/state.py` | 跨帧状态 + SpatialInfo + EnhancedState |
+| `vision_agent/core/scene_classifier.py` | 场景自动分类（时序平滑） |
+| `vision_agent/core/roi_extractor.py` | ROI 区域特征提取（血条/蓝条/数字） |
 | `vision_agent/core/trainer.py` | YOLO 训练 |
 | `vision_agent/decision/base.py` | Action + DecisionEngine ABC |
 | `vision_agent/decision/rule_engine.py` | 规则引擎（零延迟） |
 | `vision_agent/decision/llm_engine.py` | LLM 决策引擎 |
 | `vision_agent/decision/llm_provider.py` | LLM 供应商抽象层（Claude/OpenAI/兼容接口） |
 | `vision_agent/decision/trained_engine.py` | 训练模型推理引擎（MLP/RF） |
+| `vision_agent/decision/hierarchical.py` | 分层决策引擎（战略→战术→操作） |
+| `vision_agent/decision/rl_engine.py` | DQN 强化学习引擎 |
+| `vision_agent/profiles/base.py` | SceneProfile + ProfileManager |
+| `vision_agent/profiles/loader.py` | YAML Profile 加载/保存 |
+| `vision_agent/auto/auto_trainer.py` | 自动训练管线（LLM标注→模型训练） |
+| `vision_agent/auto/auto_pilot.py` | 自动编排器（场景→训练→热加载） |
 | `vision_agent/tools/` | 工具：keyboard, mouse, api_call, shell |
 | `vision_agent/agents/action_agent.py` | 智能 Agent（决策+工具） |
 | `vision_agent/data/recorder.py` | 人工操作录制（键盘/鼠标 + 检测结果） |
-| `vision_agent/data/auto_annotator.py` | LLM 自动标注视频帧 |
+| `vision_agent/data/auto_annotator.py` | LLM 自动标注视频帧（Tool Calling） |
 | `vision_agent/data/dataset.py` | 数据集加载与特征提取 |
 | `vision_agent/data/train.py` | ActionMLP + DecisionTrainer |
-| `vision_agent/gui/main_window.py` | GUI 主窗口 |
+| `vision_agent/gui/main_window.py` | GUI 主窗口（含场景/Profile 管理） |
 | `vision_agent/gui/annotate_dialog.py` | LLM 自动标注对话框 |
 | `scripts/train_decision.py` | 决策模型训练 CLI |
 

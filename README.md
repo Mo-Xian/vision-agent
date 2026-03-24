@@ -6,23 +6,32 @@
 
 ```
 感知层:  Sources(screen/camera/video/image) → ModelManager → Detector → DetectionResult
-决策层:  StateManager(跨帧状态) → DecisionEngine(Rule/LLM/Trained) → Action
+         SceneClassifier(场景识别) → ROIExtractor(区域特征)
+决策层:  StateManager(跨帧状态/空间/ROI) → DecisionEngine → Action
+         ├─ Rule     (规则引擎，零延迟)
+         ├─ Trained  (MLP/RF，毫秒级)
+         ├─ LLM      (Claude/OpenAI/本地，秒级)
+         ├─ Hierarchical (分层：战略→战术→操作)
+         └─ RL       (DQN 强化学习，自主探索)
 执行层:  ToolRegistry → Tools(keyboard/mouse/api_call/shell) → ActionAgent
-协调层:  Pipeline 串联 + WebSocket + PySide6 GUI
+协调层:  AutoPilot(场景识别→Profile路由→自动训练→热加载)
+         Pipeline 串联 + WebSocket + PySide6 GUI
 ```
 
 ## 特性
 
 - **多视频源**：屏幕捕获、摄像头、视频文件、图片目录
 - **实时检测**：基于 YOLOv8，支持自定义训练模型和模型切换
-- **多决策引擎**：规则引擎（零延迟）、LLM 引擎（Claude/OpenAI/Qwen/DeepSeek/Ollama）、训练模型引擎（MLP/RandomForest）
+- **多决策引擎**：规则引擎（零延迟）、LLM 引擎（Claude/OpenAI/Qwen/DeepSeek/Ollama）、训练模型引擎（MLP/RF）、分层引擎（战略/战术/操作）、DQN 强化学习引擎
+- **场景 Profile 系统**：YAML 配置场景（动作列表、按键映射、ROI 区域、自动训练参数），内置王者荣耀/FPS/桌面模板
+- **AutoPilot 自动闭环**：场景识别 → Profile 路由 → LLM 自动标注 → 模型训练 → 热加载决策引擎，全程无人工干预
 - **动作执行**：键盘/鼠标模拟、API 调用、Shell 命令
 - **数据管线**：人工录制 → 训练 / LLM 自动标注 → 训练 → 实时推理
-- **Tool Calling 规范化输出**：通过函数调用 + enum 约束强制 LLM 返回结构化结果，避免自由文本解析问题
-- **多模态标注**：可选将视频帧图像一并发送给 LLM，结合视觉信息提升标注质量
+- **Tool Calling 规范化输出**：通过函数调用 + enum 约束强制 LLM 返回结构化结果
+- **增强状态管理**：空间关系计算（质心/面积/距离）、ROI 区域特征（血条/蓝条/小地图）、场景分类（时序平滑）
 - **API 安全**：API Key 仅从环境变量读取，不做持久化存储
 - **WebSocket 推送**：结构化 JSON 结果实时推送
-- **PySide6 GUI**：完整图形界面，支持配置、预览、录制、训练、标注
+- **PySide6 GUI**：深色科技感主题，支持配置、预览、录制、训练、标注、场景管理
 
 ## 快速开始
 
@@ -114,52 +123,77 @@ vision-agent/
 ├── main.py                          # CLI 入口
 ├── gui_app.py                       # PySide6 GUI 入口
 ├── config.yaml                      # 全局配置
-├── detect_video.py                  # 独立视频检测脚本
+├── profiles/                        # 场景 Profile 配置
+│   ├── wzry_5v5.yaml                # 王者荣耀 5v5
+│   ├── fps_generic.yaml             # 通用 FPS 射击
+│   └── desktop.yaml                 # 桌面通用
 ├── scripts/
 │   └── train_decision.py            # 决策模型训练脚本
-├── tools/
-│   └── capture.py                   # 截图采集工具
 ├── examples/
 │   ├── run_demo.py                  # 快速启动示例
 │   └── wzry_demo.py                 # 游戏规则引擎示例
 ├── vision_agent/
 │   ├── core/
 │   │   ├── detector.py              # YOLO 检测器
-│   │   ├── pipeline.py              # 主流程管线
+│   │   ├── pipeline.py              # 主流程管线（支持热切换）
 │   │   ├── model_manager.py         # 模型注册/切换
-│   │   ├── state.py                 # 跨帧场景状态
+│   │   ├── state.py                 # 跨帧状态 + 空间信息 + 增强状态
+│   │   ├── scene_classifier.py      # 场景自动分类（时序平滑）
+│   │   ├── roi_extractor.py         # ROI 区域特征提取
 │   │   ├── trainer.py               # YOLO 训练
 │   │   └── visualizer.py            # OpenCV 可视化
 │   ├── decision/
 │   │   ├── base.py                  # Action + DecisionEngine ABC
-│   │   ├── rule_engine.py           # 规则引擎
+│   │   ├── rule_engine.py           # 规则引擎（零延迟）
 │   │   ├── llm_engine.py            # LLM 决策引擎
 │   │   ├── llm_provider.py          # LLM 供应商抽象层
-│   │   └── trained_engine.py        # 训练模型引擎
+│   │   ├── trained_engine.py        # 训练模型引擎（MLP/RF）
+│   │   ├── hierarchical.py          # 分层决策（战略→战术→操作）
+│   │   └── rl_engine.py             # DQN 强化学习引擎
+│   ├── profiles/
+│   │   ├── base.py                  # SceneProfile + ProfileManager
+│   │   └── loader.py                # YAML 配置加载/保存
+│   ├── auto/
+│   │   ├── auto_trainer.py          # 自动训练管线（标注→训练）
+│   │   └── auto_pilot.py            # 自动驾驶编排器
 │   ├── data/
 │   │   ├── recorder.py              # 人工操作录制
-│   │   ├── auto_annotator.py        # LLM 自动标注
+│   │   ├── auto_annotator.py        # LLM 自动标注（Tool Calling）
 │   │   ├── dataset.py               # 数据集加载
 │   │   └── train.py                 # MLP/RF 训练
-│   ├── tools/
-│   │   ├── keyboard.py              # 键盘模拟
-│   │   ├── mouse.py                 # 鼠标模拟
-│   │   ├── api_call.py              # HTTP API 调用
-│   │   └── shell.py                 # Shell 命令
-│   ├── agents/
-│   │   ├── action_agent.py          # 智能 Agent
-│   │   └── demo_agent.py            # 示例 Agent
+│   ├── tools/                       # 键盘/鼠标/API/Shell
+│   ├── agents/                      # 智能 Agent
 │   ├── sources/                     # 视频源 (screen/camera/video/image)
 │   ├── server/                      # WebSocket 服务
 │   └── gui/                         # PySide6 GUI 组件
-│       ├── main_window.py           # 主窗口
-│       ├── annotate_dialog.py       # LLM 标注对话框
-│       ├── train_dialog.py          # YOLO 训练对话框
-│       └── video_widget.py          # 视频预览组件
 ├── tests/
 │   └── test_auto_annotator.py       # 自动标注单元测试
 └── requirements.txt
 ```
+
+## 场景 Profile
+
+Profile 是预定义的场景配置，存放在 `profiles/` 目录下：
+
+```yaml
+name: wzry_5v5
+display_name: 王者荣耀 5v5
+yolo_model: runs/detect/wzry/weights/best.pt
+actions: [attack, retreat, skill_1, skill_2, skill_3, ultimate, recall, idle]
+action_key_map:
+  attack: {type: key, key: a}
+  skill_1: {type: key, key: "1"}
+roi_regions:
+  hp_bar: [0.42, 0.92, 0.58, 0.95]
+  minimap: [0.0, 0.7, 0.2, 1.0]
+scene_keywords: [hero, tower, minion, monster]
+auto_train:
+  enabled: true
+  sample_count: 500
+  llm_provider: claude
+```
+
+**AutoPilot 闭环流程**：检测到目标 → 场景分类器识别场景 → 匹配 Profile → 自动标注帧数据 → 训练决策模型 → 热加载到 Pipeline → 实时决策
 
 ## WebSocket 数据格式
 

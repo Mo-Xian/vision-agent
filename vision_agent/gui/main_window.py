@@ -17,7 +17,11 @@ from ..sources import create_source
 from ..core.detector import Detector, DetectionResult
 from ..core.model_manager import ModelManager
 from ..core.state import StateManager
-from ..decision import RuleEngine, LLMEngine, TrainedEngine, PROVIDER_PRESETS, create_provider
+from ..decision import RuleEngine, LLMEngine, TrainedEngine, HierarchicalEngine, RLEngine, PROVIDER_PRESETS, create_provider
+from ..profiles import ProfileManager, SceneProfile
+from ..core.scene_classifier import SceneClassifier
+from ..core.roi_extractor import ROIExtractor
+from ..auto import AutoPilot
 from ..data.recorder import DataRecorder
 from ..tools import ToolRegistry
 from ..tools.keyboard import KeyboardTool
@@ -47,6 +51,9 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("VisionAgent", "VisionAgent")
         self._recorder: DataRecorder | None = None
         self._train_worker: DecisionTrainWorker | None = None
+        self._profile_mgr = ProfileManager("profiles")
+        self._scene_classifier = SceneClassifier()
+        self._auto_pilot: AutoPilot | None = None
         self._init_ui()
         self._scan_models()
         self._load_settings()
@@ -75,6 +82,7 @@ class MainWindow(QMainWindow):
         self._build_detector_tab()
         self._build_decision_tab()
         self._build_record_train_tab()
+        self._build_scene_tab()
         left_layout.addWidget(self.config_tabs, 0)
 
         # -- 操作按钮 --
@@ -118,6 +126,11 @@ class MainWindow(QMainWindow):
             f"color: {COLORS['accent']}; font-size: 12px; padding: 0;"
         )
         status_layout.addWidget(self.engine_status)
+        self.scene_label = QLabel("场景: --")
+        self.scene_label.setStyleSheet(
+            f"color: {COLORS['purple']}; font-size: 12px; padding: 0;"
+        )
+        status_layout.addWidget(self.scene_label)
         left_layout.addWidget(status_w)
 
         # -- 日志区域 (Tab) --
@@ -257,7 +270,7 @@ class MainWindow(QMainWindow):
         form_top = QFormLayout()
         form_top.setSpacing(6)
         self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["none", "rule", "trained", "llm"])
+        self.engine_combo.addItems(["none", "rule", "trained", "llm", "hierarchical", "rl"])
         self.engine_combo.setCurrentText("rule")
         self.engine_combo.currentTextChanged.connect(self._on_engine_changed)
         form_top.addRow("引擎", self.engine_combo)
@@ -499,6 +512,107 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         self.config_tabs.addTab(tab, "录制/训练")
+
+    def _build_scene_tab(self):
+        """构建「场景/Profile」Tab。"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Profile 选择
+        layout.addWidget(QLabel("场景 Profile"))
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItem("(无)")
+        self._refresh_profiles()
+        self.profile_combo.currentTextChanged.connect(self._on_profile_changed)
+        layout.addWidget(self.profile_combo)
+
+        # Profile 信息
+        self.profile_info = QTextEdit()
+        self.profile_info.setReadOnly(True)
+        self.profile_info.setMaximumHeight(140)
+        self.profile_info.setPlaceholderText("选择 Profile 查看详情")
+        layout.addWidget(self.profile_info)
+
+        # 刷新按钮
+        refresh_btn = QPushButton("刷新 Profiles")
+        refresh_btn.setObjectName("browseBtn")
+        refresh_btn.setCursor(Qt.PointingHandCursor)
+        refresh_btn.clicked.connect(self._refresh_profiles)
+        layout.addWidget(refresh_btn)
+
+        # AutoPilot 开关
+        from PySide6.QtWidgets import QCheckBox
+        self.autopilot_check = QCheckBox("启用 AutoPilot（自动场景识别 + 自动训练）")
+        self.autopilot_check.setToolTip(
+            "开启后自动根据检测结果识别场景，\n"
+            "切换到对应 Profile 并在需要时自动训练决策模型"
+        )
+        layout.addWidget(self.autopilot_check)
+
+        # 场景状态
+        scene_group = QGroupBox("当前场景状态")
+        scene_group.setStyleSheet("")
+        sg = QVBoxLayout(scene_group)
+        self.scene_status_text = QTextEdit()
+        self.scene_status_text.setReadOnly(True)
+        self.scene_status_text.setMaximumHeight(100)
+        self.scene_status_text.setPlaceholderText("启动检测后显示场景信息")
+        sg.addWidget(self.scene_status_text)
+        layout.addWidget(scene_group)
+
+        layout.addStretch()
+        self.config_tabs.addTab(tab, "场景")
+
+    def _refresh_profiles(self):
+        """刷新 Profile 列表。"""
+        current = self.profile_combo.currentText() if hasattr(self, 'profile_combo') else ""
+        self.profile_combo.clear()
+        self.profile_combo.addItem("(无)")
+        profiles = self._profile_mgr.load_all()
+        for name, p in profiles.items():
+            self.profile_combo.addItem(f"{p.display_name} ({name})")
+        if current:
+            idx = self.profile_combo.findText(current)
+            if idx >= 0:
+                self.profile_combo.setCurrentIndex(idx)
+
+    @Slot(str)
+    def _on_profile_changed(self, text: str):
+        """Profile 选择变更：更新信息面板和相关配置。"""
+        if not text or text == "(无)":
+            self.profile_info.clear()
+            return
+
+        # 从显示文本提取 name
+        name = text.split("(")[-1].rstrip(")") if "(" in text else text
+        profile = self._profile_mgr.get(name)
+        if not profile:
+            return
+
+        info_lines = [
+            f"名称: {profile.display_name}",
+            f"YOLO 模型: {profile.yolo_model}",
+            f"决策引擎: {profile.decision_engine}",
+            f"动作: {', '.join(profile.actions)}",
+            f"场景关键词: {', '.join(profile.scene_keywords)}",
+            f"ROI 区域: {', '.join(profile.roi_regions.keys())}",
+            f"自动训练: {'启用' if profile.auto_train.get('enabled') else '禁用'}",
+        ]
+        self.profile_info.setPlainText("\n".join(info_lines))
+
+        # 自动填充相关配置
+        if profile.yolo_model:
+            self.model_combo.setEditText(profile.yolo_model)
+        if profile.decision_engine and profile.decision_engine != "rule":
+            self.engine_combo.setCurrentText(profile.decision_engine)
+        if profile.action_key_map:
+            self.trained_action_map_edit.setPlainText(
+                json.dumps(profile.action_key_map, indent=2, ensure_ascii=False)
+            )
+        if profile.decision_model_dir:
+            self.trained_model_dir.setText(profile.decision_model_dir)
 
     # ── 录制/训练 事件处理 ──
 
@@ -873,6 +987,28 @@ class MainWindow(QMainWindow):
             )
             engine.set_log_callback(self._decision_log_callback)
             self._log(f"LLM 引擎: {provider_name}/{model}")
+        elif engine_type == "hierarchical":
+            micro = RuleEngine()
+            engine = HierarchicalEngine(micro=micro)
+            engine.set_log_callback(self._decision_log_callback)
+            self._log("分层引擎: micro=rule")
+        elif engine_type == "rl":
+            # 从 Profile 获取动作列表，否则使用默认
+            profile_name = self.profile_combo.currentText() if hasattr(self, 'profile_combo') else "(无)"
+            actions = ["idle", "attack", "retreat"]
+            action_key_map = {}
+            name = profile_name.split("(")[-1].rstrip(")") if "(" in profile_name else ""
+            profile = self._profile_mgr.get(name) if name else None
+            if profile:
+                actions = profile.actions or actions
+                action_key_map = profile.action_key_map or {}
+            engine = RLEngine(
+                actions=actions,
+                action_key_map=action_key_map,
+                training=True,
+            )
+            engine.set_log_callback(self._decision_log_callback)
+            self._log(f"RL 引擎: {len(actions)} 动作, training=True")
         else:
             return []
 
@@ -914,9 +1050,21 @@ class MainWindow(QMainWindow):
         self._frame_count = 0
         self.log_text.clear()
         self.decision_log_text.clear()
+
+        # 初始化 AutoPilot
+        self._auto_pilot = None
+        if hasattr(self, 'autopilot_check') and self.autopilot_check.isChecked():
+            self._auto_pilot = AutoPilot(
+                profile_manager=self._profile_mgr,
+                scene_classifier=self._scene_classifier,
+                on_log=self._decision_log_callback,
+            )
+            self._log("AutoPilot 已启用")
+
         self._log("启动检测...")
 
-        self._worker = DetectionWorker(source, detector, agents=agents)
+        self._worker = DetectionWorker(source, detector, agents=agents,
+                                       auto_pilot=self._auto_pilot)
         self._worker.frame_ready.connect(self._on_frame_ready)
         self._worker.fps_updated.connect(self._on_fps_updated)
         self._worker.error.connect(self._on_error)
@@ -943,6 +1091,18 @@ class MainWindow(QMainWindow):
         self.count_label.setText(
             f"检测: {len(result.detections)}  |  帧: {self._frame_count}"
         )
+        # 更新场景状态
+        if self._auto_pilot:
+            scene = self._auto_pilot.current_scene
+            self.scene_label.setText(f"场景: {scene}")
+            engines = self._auto_pilot.available_engines
+            if hasattr(self, 'scene_status_text'):
+                self.scene_status_text.setPlainText(
+                    f"当前场景: {scene}\n"
+                    f"已加载引擎: {', '.join(engines) if engines else '无'}\n"
+                    f"帧缓冲: {len(self._auto_pilot._frame_buffer)}"
+                )
+
         if self._frame_count % 30 == 1 and result.detections:
             names = [f"{d.class_name}({d.confidence:.2f})" for d in result.detections[:5]]
             self._log(f"[F{self._frame_count}] {', '.join(names)}")

@@ -1,0 +1,68 @@
+name: fps_generic
+display_name: 通用 FPS 射击游戏
+yolo_model: runs/detect/fps/weights/best.pt
+
+actions:
+  - shoot
+  - reload
+  - move_forward
+  - move_back
+  - move_left
+  - move_right
+  - jump
+  - crouch
+  - switch_weapon
+  - grenade
+  - aim
+  - idle
+
+action_key_map:
+  shoot: {type: click, button: left}
+  reload: {type: key, key: r}
+  move_forward: {type: key, key: w}
+  move_back: {type: key, key: s}
+  move_left: {type: key, key: a}
+  move_right: {type: key, key: d}
+  jump: {type: key, key: space}
+  crouch: {type: key, key: ctrl}
+  switch_weapon: {type: key, key: q}
+  grenade: {type: key, key: g}
+  aim: {type: click, button: right}
+
+action_descriptions:
+  shoot: 向目标开火
+  reload: 换弹
+  move_forward: 向前移动
+  move_back: 向后移动
+  move_left: 向左移动
+  move_right: 向右移动
+  jump: 跳跃
+  crouch: 蹲下
+  switch_weapon: 切换武器
+  grenade: 投掷手雷
+  aim: 瞄准（右键）
+  idle: 保持不动
+
+decision_engine: rule
+decision_model_dir: ""
+
+roi_regions:
+  crosshair: [0.45, 0.45, 0.55, 0.55]
+  health: [0.02, 0.9, 0.15, 0.97]
+  ammo: [0.85, 0.9, 0.98, 0.97]
+  minimap: [0.8, 0.0, 1.0, 0.2]
+
+scene_keywords:
+  - person
+  - gun
+  - weapon
+  - enemy
+  - crosshair
+
+auto_train:
+  enabled: false
+  sample_count: 1000
+  llm_provider: claude
+  llm_model: claude-sonnet-4-20250514
+
+extra: {}

@@ -1,0 +1,54 @@
+name: desktop
+display_name: 桌面通用
+yolo_model: yolov8n.pt
+
+actions:
+  - click
+  - double_click
+  - right_click
+  - scroll_up
+  - scroll_down
+  - type_text
+  - hotkey
+  - idle
+
+action_key_map:
+  click: {type: click, button: left}
+  double_click: {type: click, button: left, count: 2}
+  right_click: {type: click, button: right}
+  scroll_up: {type: scroll, direction: up, amount: 3}
+  scroll_down: {type: scroll, direction: down, amount: 3}
+  hotkey: {type: key, key: ""}
+
+action_descriptions:
+  click: 单击目标元素
+  double_click: 双击目标元素
+  right_click: 右键点击目标元素
+  scroll_up: 向上滚动
+  scroll_down: 向下滚动
+  type_text: 输入文本
+  hotkey: 执行快捷键
+  idle: 无操作
+
+decision_engine: rule
+decision_model_dir: ""
+
+roi_regions:
+  taskbar: [0.0, 0.95, 1.0, 1.0]
+  center: [0.25, 0.25, 0.75, 0.75]
+
+scene_keywords:
+  - mouse
+  - keyboard
+  - monitor
+  - laptop
+  - cell phone
+
+auto_train:
+  enabled: false
+  sample_count: 200
+  llm_provider: claude
+  llm_model: claude-sonnet-4-20250514
+
+extra:
+  description: 通用桌面场景，适合测试和开发

@@ -1,0 +1,55 @@
+name: wzry_5v5
+display_name: 王者荣耀 5v5
+yolo_model: runs/detect/wzry/weights/best.pt
+
+actions:
+  - attack
+  - retreat
+  - skill_1
+  - skill_2
+  - skill_3
+  - ultimate
+  - recall
+  - idle
+
+action_key_map:
+  attack: {type: key, key: a}
+  retreat: {type: key, key: s}
+  skill_1: {type: key, key: "1"}
+  skill_2: {type: key, key: "2"}
+  skill_3: {type: key, key: "3"}
+  ultimate: {type: key, key: "4"}
+  recall: {type: key, key: b}
+
+action_descriptions:
+  attack: 普攻最近的敌人
+  retreat: 向安全方向撤退
+  skill_1: 释放 1 技能
+  skill_2: 释放 2 技能
+  skill_3: 释放 3 技能
+  ultimate: 释放大招
+  recall: 回城
+  idle: 保持当前状态不动
+
+decision_engine: rule
+decision_model_dir: ""
+
+roi_regions:
+  hp_bar: [0.42, 0.92, 0.58, 0.95]
+  minimap: [0.0, 0.7, 0.2, 1.0]
+  skill_bar: [0.6, 0.85, 0.95, 1.0]
+
+scene_keywords:
+  - hero
+  - tower
+  - minion
+  - monster
+  - crystal
+
+auto_train:
+  enabled: true
+  sample_count: 500
+  llm_provider: claude
+  llm_model: claude-sonnet-4-20250514
+
+extra: {}

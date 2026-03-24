@@ -6,3 +6,5 @@ from .llm_provider import (
     LLMProvider, ClaudeProvider, OpenAIProvider,
     PROVIDERS, PROVIDER_PRESETS, create_provider,
 )
+from .hierarchical import HierarchicalEngine
+from .rl_engine import RLEngine, RewardDetector

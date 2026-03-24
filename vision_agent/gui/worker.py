@@ -19,11 +19,13 @@ class DetectionWorker(QThread):
     decision_log = Signal(str)                          # 决策日志
 
     def __init__(self, source: BaseSource, detector: Detector,
-                 agents: list[BaseAgent] | None = None, parent=None):
+                 agents: list[BaseAgent] | None = None,
+                 auto_pilot=None, parent=None):
         super().__init__(parent)
         self.source = source
         self.detector = detector
         self.agents = agents or []
+        self.auto_pilot = auto_pilot
         self._running = False
         self._fps_alpha = 0.9
         self._fps = 0.0
@@ -38,6 +40,8 @@ class DetectionWorker(QThread):
 
         for agent in self.agents:
             agent.on_start()
+        if self.auto_pilot:
+            self.auto_pilot.start()
 
         last_time = time.perf_counter()
         frame_count = 0
@@ -49,6 +53,10 @@ class DetectionWorker(QThread):
                 break
 
             result = self.detector.detect(frame)
+
+            # AutoPilot 场景分类
+            if self.auto_pilot:
+                self.auto_pilot.on_frame(frame, result)
 
             # Agent 处理
             for agent in self.agents:
@@ -74,6 +82,8 @@ class DetectionWorker(QThread):
 
         for agent in self.agents:
             agent.on_stop()
+        if self.auto_pilot:
+            self.auto_pilot.stop()
         self.source.stop()
 
     def stop(self):
