@@ -24,6 +24,8 @@ class AnnotateWorker(QThread):
         sample_interval: int = 10,
         max_frames: int = 0,
         confidence: float = 0.5,
+        send_image: bool = False,
+        use_tool_calling: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -38,6 +40,8 @@ class AnnotateWorker(QThread):
         self.sample_interval = sample_interval
         self.max_frames = max_frames
         self.confidence = confidence
+        self.send_image = send_image
+        self.use_tool_calling = use_tool_calling
         self._annotator = None
 
     def run(self):
@@ -71,6 +75,8 @@ class AnnotateWorker(QThread):
                 sample_interval=self.sample_interval,
                 max_frames=self.max_frames,
                 progress_callback=on_progress,
+                send_image=self.send_image,
+                use_tool_calling=self.use_tool_calling,
             )
             self._annotator.set_log_callback(lambda msg: self.log_message.emit(msg))
 

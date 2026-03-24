@@ -18,6 +18,9 @@
 - **多决策引擎**：规则引擎（零延迟）、LLM 引擎（Claude/OpenAI/Qwen/DeepSeek/Ollama）、训练模型引擎（MLP/RandomForest）
 - **动作执行**：键盘/鼠标模拟、API 调用、Shell 命令
 - **数据管线**：人工录制 → 训练 / LLM 自动标注 → 训练 → 实时推理
+- **Tool Calling 规范化输出**：通过函数调用 + enum 约束强制 LLM 返回结构化结果，避免自由文本解析问题
+- **多模态标注**：可选将视频帧图像一并发送给 LLM，结合视觉信息提升标注质量
+- **API 安全**：API Key 仅从环境变量读取，不做持久化存储
 - **WebSocket 推送**：结构化 JSON 结果实时推送
 - **PySide6 GUI**：完整图形界面，支持配置、预览、录制、训练、标注
 
@@ -58,6 +61,42 @@ python main.py --decision trained --decision-model runs/decision/exp1
 2. 点击「LLM 自动标注」，配置视频/模型/LLM
 3. 标注完成后点击「开始训练」
 4. 切换决策引擎到 `trained`，配置动作映射
+
+#### LLM 标注输出规范化
+
+标注器支持两种 LLM 输出模式：
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **Tool Calling**（默认） | 通过函数调用 + `enum` 约束，LLM 被强制从预设动作列表中选择，返回结构化 JSON | Claude、GPT-4o、Qwen 等支持 function calling 的模型 |
+| **文本解析**（回退） | 从 LLM 自由文本中提取 JSON 或关键词匹配，4 层 fallback 机制 | Ollama 本地模型等不支持 tool calling 的场景 |
+
+Tool Calling 模式下，LLM 收到的工具定义：
+```json
+{
+  "name": "decide_action",
+  "input_schema": {
+    "properties": {
+      "action": { "type": "string", "enum": ["attack", "retreat", "skill_1", "idle"] },
+      "reason": { "type": "string" }
+    },
+    "required": ["action"]
+  }
+}
+```
+
+LLM 返回的结构化结果（由 API 层面保证格式）：
+```json
+{
+  "name": "decide_action",
+  "input": { "action": "attack", "reason": "检测到敌方英雄在近处" }
+}
+```
+
+其他标注选项：
+- **发送帧图像**：勾选后将视频帧（JPEG）一并发送给多模态 LLM，利用视觉信息辅助决策
+- **速率限制与重试**：自动控制请求间隔，遇到 429/5xx 错误指数退避重试
+- **训练数据保护**：不在预设列表中的动作自动丢弃，避免污染训练集
 
 ## 配置
 
@@ -117,6 +156,8 @@ vision-agent/
 │       ├── annotate_dialog.py       # LLM 标注对话框
 │       ├── train_dialog.py          # YOLO 训练对话框
 │       └── video_widget.py          # 视频预览组件
+├── tests/
+│   └── test_auto_annotator.py       # 自动标注单元测试
 └── requirements.txt
 ```
 

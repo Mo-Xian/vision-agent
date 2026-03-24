@@ -63,12 +63,44 @@ class ClaudeProvider(LLMProvider):
                 kwargs["base_url"] = self._base_url
             self._client = anthropic.Anthropic(**kwargs)
 
+    @staticmethod
+    def _convert_messages(messages: list[dict]) -> list[dict]:
+        """将 OpenAI 格式的 image_url 转为 Claude 的 image source 格式。"""
+        converted = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "image_url":
+                        url = item["image_url"]["url"]
+                        if url.startswith("data:"):
+                            # data:image/jpeg;base64,xxxxx
+                            header, b64_data = url.split(",", 1)
+                            media_type = header.split(":")[1].split(";")[0]
+                            new_content.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                },
+                            })
+                        else:
+                            new_content.append({"type": "text", "text": f"[image: {url}]"})
+                    else:
+                        new_content.append(item)
+                converted.append({"role": msg["role"], "content": new_content})
+            else:
+                converted.append(msg)
+        return converted
+
     def chat(self, messages, system="", tools=None, max_tokens=1024):
         self._ensure_client()
         kwargs = {
             "model": self._model,
             "max_tokens": max_tokens,
-            "messages": messages,
+            "messages": self._convert_messages(messages),
         }
         if system:
             kwargs["system"] = system

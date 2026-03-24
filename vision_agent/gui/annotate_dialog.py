@@ -5,12 +5,12 @@
 
 import os
 from pathlib import Path
-import base64
 from PySide6.QtCore import Qt, Slot, QSettings
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel,
     QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox,
     QFileDialog, QTextEdit, QProgressBar, QMessageBox, QFormLayout,
+    QCheckBox,
 )
 
 from ..decision.llm_provider import PROVIDER_PRESETS, create_provider
@@ -136,6 +136,16 @@ class AnnotateDialog(QDialog):
         self.actions_input = QLineEdit("attack, retreat, skill_1, skill_2, idle")
         self.actions_input.setPlaceholderText("attack, retreat, skill_1, idle")
         ag.addWidget(self.actions_input)
+
+        self.send_image_check = QCheckBox("发送帧图像给 LLM（多模态，需模型支持 vision）")
+        self.send_image_check.setStyleSheet("color: #c0c0c0; font-size: 13px; padding-left: 4px;")
+        ag.addWidget(self.send_image_check)
+
+        self.tool_calling_check = QCheckBox("使用 Tool Calling 规范化输出（推荐）")
+        self.tool_calling_check.setStyleSheet("color: #c0c0c0; font-size: 13px; padding-left: 4px;")
+        self.tool_calling_check.setChecked(True)
+        self.tool_calling_check.setToolTip("通过函数调用强制 LLM 返回结构化结果，避免格式解析问题")
+        ag.addWidget(self.tool_calling_check)
 
         layout.addWidget(action_group)
 
@@ -291,6 +301,8 @@ class AnnotateDialog(QDialog):
             sample_interval=self.sample_spin.value(),
             max_frames=self.max_frames_spin.value(),
             confidence=self.det_conf_spin.value(),
+            send_image=self.send_image_check.isChecked(),
+            use_tool_calling=self.tool_calling_check.isChecked(),
         )
         self._worker.log_message.connect(self._on_log)
         self._worker.progress.connect(self._on_progress)
@@ -357,12 +369,8 @@ class AnnotateDialog(QDialog):
         s.setValue("annotate/model", self.llm_model.currentText())
         s.setValue("annotate/base_url", self.llm_base_url.text())
         s.setValue("annotate/output", self.output_input.text())
-        # 保存 API key（base64）
-        api_key = self.llm_api_key.text().strip()
-        if api_key:
-            s.setValue("annotate/api_key_b64", base64.b64encode(api_key.encode()).decode())
-        else:
-            s.remove("annotate/api_key_b64")
+        s.setValue("annotate/send_image", self.send_image_check.isChecked())
+        s.setValue("annotate/use_tool_calling", self.tool_calling_check.isChecked())
 
     def _load_settings(self):
         s = self._settings
@@ -404,13 +412,12 @@ class AnnotateDialog(QDialog):
         if base_url:
             self.llm_base_url.setText(base_url)
 
-        # API key：优先标注的，否则复用决策引擎的
-        api_key_b64 = s.value("annotate/api_key_b64") or s.value("decision/api_key_b64")
-        if api_key_b64:
-            try:
-                self.llm_api_key.setText(base64.b64decode(api_key_b64).decode())
-            except Exception:
-                pass
+        if s.value("annotate/send_image") is not None:
+            self.send_image_check.setChecked(s.value("annotate/send_image") == "true"
+                                             or s.value("annotate/send_image") is True)
+        if s.value("annotate/use_tool_calling") is not None:
+            val = s.value("annotate/use_tool_calling")
+            self.tool_calling_check.setChecked(val == "true" or val is True)
 
     def closeEvent(self, event):
         self._save_settings()

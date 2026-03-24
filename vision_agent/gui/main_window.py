@@ -1072,12 +1072,7 @@ class MainWindow(QMainWindow):
         s.setValue("decision/model", self.llm_model_combo.currentText())
         s.setValue("decision/base_url", self.llm_base_url.text())
         s.setValue("decision/interval", self.llm_interval.value())
-        api_key = self.llm_api_key.text().strip()
-        if api_key:
-            import base64
-            s.setValue("decision/api_key_b64", base64.b64encode(api_key.encode()).decode())
-        else:
-            s.remove("decision/api_key_b64")
+        # API Key 不再持久化存储，仅从环境变量读取
 
     def _load_settings(self):
         s = self._settings
@@ -1125,13 +1120,7 @@ class MainWindow(QMainWindow):
             self.llm_base_url.setText(s.value("decision/base_url"))
         if s.value("decision/interval") is not None:
             self.llm_interval.setValue(float(s.value("decision/interval", 1.0)))
-        api_key_b64 = s.value("decision/api_key_b64")
-        if api_key_b64:
-            try:
-                import base64
-                self.llm_api_key.setText(base64.b64decode(api_key_b64).decode())
-            except Exception:
-                pass
+        # API Key 不再从持久化存储加载，仅从环境变量读取
 
     def closeEvent(self, event):
         self._save_settings()
