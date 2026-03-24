@@ -3,8 +3,8 @@
 import os
 import json
 from pathlib import Path
-from PySide6.QtCore import Qt, Slot, QSettings
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import Qt, Slot, QSettings, QMimeData
+from PySide6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox,
     QLabel, QComboBox, QLineEdit, QPushButton, QSpinBox,
@@ -29,67 +29,17 @@ from .video_widget import VideoWidget
 from .worker import DetectionWorker
 from .decision_train_worker import DecisionTrainWorker
 
-# 样式表
-STYLESHEET = """
-QMainWindow { background-color: #0f0f23; }
-QGroupBox {
-    background-color: #16213e;
-    border: 1px solid #0f3460; border-radius: 8px;
-    margin-top: 14px; padding: 12px; padding-top: 24px;
-    color: #e0e0e0; font-weight: bold; font-size: 13px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin; left: 12px; padding: 0 6px; font-size: 14px;
-}
-QLabel { color: #c0c0c0; font-size: 13px; }
-QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
-    background-color: #1a1a2e; color: #e0e0e0;
-    border: 1px solid #0f3460; border-radius: 4px;
-    padding: 4px 8px; min-height: 24px; font-size: 13px;
-}
-QComboBox:focus, QLineEdit:focus { border-color: #e94560; }
-QComboBox::drop-down { border: none; width: 24px; }
-QPushButton {
-    border-radius: 6px; padding: 6px 12px;
-    font-size: 13px; font-weight: bold; min-height: 28px;
-}
-QPushButton#startBtn { background-color: #00b894; color: white; }
-QPushButton#startBtn:hover { background-color: #00a381; }
-QPushButton#startBtn:disabled { background-color: #555; }
-QPushButton#stopBtn { background-color: #e94560; color: white; }
-QPushButton#stopBtn:hover { background-color: #d63851; }
-QPushButton#stopBtn:disabled { background-color: #555; }
-QPushButton#browseBtn {
-    background-color: #0f3460; color: #e0e0e0;
-    padding: 4px 10px; min-height: 22px; font-size: 12px;
-}
-QTextEdit {
-    background-color: #1a1a2e; color: #a0e0a0;
-    border: 1px solid #0f3460; border-radius: 6px;
-    font-family: Consolas, monospace; font-size: 12px; padding: 4px;
-}
-QSplitter::handle { background-color: #0f3460; width: 2px; }
-QTabWidget::pane {
-    border: 1px solid #0f3460; border-top: none;
-    background-color: #16213e; border-radius: 0 0 6px 6px;
-}
-QTabBar::tab {
-    background: #1a1a2e; color: #c0c0c0; padding: 6px 14px;
-    border: 1px solid #0f3460; border-bottom: none;
-    border-radius: 4px 4px 0 0; font-size: 12px; margin-right: 2px;
-}
-QTabBar::tab:selected { background: #16213e; color: #e0e0e0; border-bottom: 1px solid #16213e; }
-QFormLayout { margin: 0; }
-"""
+from .styles import MAIN_STYLESHEET, COLORS
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Vision Agent - 实时目标检测")
+        self.setWindowTitle("Vision Agent")
         self.setMinimumSize(1100, 700)
         self.resize(1400, 820)
-        self.setStyleSheet(STYLESHEET)
+        self.setStyleSheet(MAIN_STYLESHEET)
+        self.setAcceptDrops(True)
 
         self._worker: DetectionWorker | None = None
         self._frame_count = 0
@@ -129,13 +79,17 @@ class MainWindow(QMainWindow):
 
         # -- 操作按钮 --
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(6)
-        self.start_btn = QPushButton("▶  启动")
+        btn_layout.setSpacing(8)
+        self.start_btn = QPushButton("▶  启动检测")
         self.start_btn.setObjectName("startBtn")
+        self.start_btn.setToolTip("启动实时目标检测")
+        self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.clicked.connect(self._start_detection)
         btn_layout.addWidget(self.start_btn)
         self.stop_btn = QPushButton("■  停止")
         self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setToolTip("停止检测")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop_detection)
         btn_layout.addWidget(self.stop_btn)
@@ -143,18 +97,26 @@ class MainWindow(QMainWindow):
 
         # -- 状态栏 --
         status_w = QWidget()
-        status_w.setStyleSheet("background-color: #16213e; border-radius: 6px; padding: 4px;")
+        status_w.setStyleSheet(
+            f"background-color: {COLORS['bg_card']}; "
+            f"border: 1px solid {COLORS['border']}; "
+            "border-radius: 8px; padding: 4px;"
+        )
         status_layout = QVBoxLayout(status_w)
-        status_layout.setContentsMargins(8, 4, 8, 4)
-        status_layout.setSpacing(2)
+        status_layout.setContentsMargins(10, 6, 10, 6)
+        status_layout.setSpacing(3)
         self.fps_label = QLabel("FPS: --  |  推理: --ms")
-        self.fps_label.setStyleSheet("font-size: 14px; color: #00b894; font-weight: bold;")
+        self.fps_label.setStyleSheet(
+            f"font-size: 14px; color: {COLORS['success']}; font-weight: bold; padding: 0;"
+        )
         status_layout.addWidget(self.fps_label)
         self.count_label = QLabel("检测: 0  |  帧: 0")
-        self.count_label.setStyleSheet("font-size: 12px;")
+        self.count_label.setStyleSheet("font-size: 12px; padding: 0;")
         status_layout.addWidget(self.count_label)
         self.engine_status = QLabel("决策: 0  |  执行: 0  |  失败: 0")
-        self.engine_status.setStyleSheet("color: #74b9ff; font-size: 12px;")
+        self.engine_status.setStyleSheet(
+            f"color: {COLORS['accent']}; font-size: 12px; padding: 0;"
+        )
         status_layout.addWidget(self.engine_status)
         left_layout.addWidget(status_w)
 
@@ -260,8 +222,10 @@ class MainWindow(QMainWindow):
         self.load_model_btn.setObjectName("browseBtn")
         self.load_model_btn.clicked.connect(self._load_custom_model)
         btn_row.addWidget(self.load_model_btn)
-        self.train_btn_open = QPushButton("训练")
-        self.train_btn_open.setStyleSheet("background-color: #6c5ce7; color: white; font-size: 12px;")
+        self.train_btn_open = QPushButton("训练 YOLO")
+        self.train_btn_open.setObjectName("purpleBtn")
+        self.train_btn_open.setCursor(Qt.PointingHandCursor)
+        self.train_btn_open.setToolTip("打开 YOLO 模型训练对话框")
         self.train_btn_open.clicked.connect(self._open_train_dialog)
         btn_row.addWidget(self.train_btn_open)
         layout.addLayout(btn_row)
@@ -384,7 +348,9 @@ class MainWindow(QMainWindow):
         llm_layout.addLayout(form)
 
         self.llm_test_btn = QPushButton("测试连接")
-        self.llm_test_btn.setStyleSheet("background-color: #0984e3; color: white; font-size: 12px;")
+        self.llm_test_btn.setObjectName("infoBtn")
+        self.llm_test_btn.setCursor(Qt.PointingHandCursor)
+        self.llm_test_btn.setToolTip("测试 LLM API 是否能正常连接")
         self.llm_test_btn.clicked.connect(self._test_llm_connection)
         llm_layout.addWidget(self.llm_test_btn)
 
@@ -406,7 +372,7 @@ class MainWindow(QMainWindow):
 
         # ── 录制区域 ──
         rec_group = QGroupBox("数据录制")
-        rec_group.setStyleSheet(rec_group.styleSheet() + "QGroupBox { padding-top: 20px; margin-top: 10px; }")
+        rec_group.setStyleSheet("")
         rg = QVBoxLayout(rec_group)
         rg.setSpacing(6)
 
@@ -429,26 +395,30 @@ class MainWindow(QMainWindow):
         rg.addLayout(session_row)
 
         rec_btn_row = QHBoxLayout()
-        self.rec_start_btn = QPushButton("● 开始录制")
-        self.rec_start_btn.setStyleSheet("background-color: #e17055; color: white;")
+        self.rec_start_btn = QPushButton("●  开始录制")
+        self.rec_start_btn.setObjectName("stopBtn")
+        self.rec_start_btn.setCursor(Qt.PointingHandCursor)
+        self.rec_start_btn.setToolTip("录制人工操作（键盘/鼠标）和 YOLO 检测结果")
         self.rec_start_btn.clicked.connect(self._toggle_recording)
         rec_btn_row.addWidget(self.rec_start_btn)
 
         self.auto_annotate_btn = QPushButton("LLM 自动标注")
-        self.auto_annotate_btn.setStyleSheet("background-color: #6c5ce7; color: white; font-size: 12px;")
+        self.auto_annotate_btn.setObjectName("purpleBtn")
+        self.auto_annotate_btn.setCursor(Qt.PointingHandCursor)
+        self.auto_annotate_btn.setToolTip("用 LLM 自动标注视频帧，生成训练数据")
         self.auto_annotate_btn.clicked.connect(self._open_annotate_dialog)
         rec_btn_row.addWidget(self.auto_annotate_btn)
         rg.addLayout(rec_btn_row)
 
-        self.rec_status_label = QLabel("状态: 未录制")
-        self.rec_status_label.setStyleSheet("color: #636e72; font-size: 12px;")
+        self.rec_status_label = QLabel("就绪，可开始录制")
+        self.rec_status_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
         rg.addWidget(self.rec_status_label)
 
         layout.addWidget(rec_group)
 
         # ── 训练区域 ──
         train_group = QGroupBox("决策模型训练")
-        train_group.setStyleSheet(train_group.styleSheet() + "QGroupBox { padding-top: 20px; margin-top: 10px; }")
+        train_group.setStyleSheet("")
         tg = QVBoxLayout(train_group)
         tg.setSpacing(6)
 
@@ -492,17 +462,23 @@ class MainWindow(QMainWindow):
 
         dt_btn_row = QHBoxLayout()
         self.dt_preview_btn = QPushButton("预览数据")
-        self.dt_preview_btn.setStyleSheet("background-color: #0984e3; color: white; font-size: 12px;")
+        self.dt_preview_btn.setObjectName("infoBtn")
+        self.dt_preview_btn.setCursor(Qt.PointingHandCursor)
+        self.dt_preview_btn.setToolTip("查看录制数据的统计概况")
         self.dt_preview_btn.clicked.connect(self._preview_data)
         dt_btn_row.addWidget(self.dt_preview_btn)
 
-        self.dt_train_btn = QPushButton("▶ 开始训练")
-        self.dt_train_btn.setStyleSheet("background-color: #00b894; color: white;")
+        self.dt_train_btn = QPushButton("▶  开始训练")
+        self.dt_train_btn.setObjectName("startBtn")
+        self.dt_train_btn.setCursor(Qt.PointingHandCursor)
+        self.dt_train_btn.setToolTip("使用录制数据训练决策模型 (MLP/RF)")
         self.dt_train_btn.clicked.connect(self._start_decision_train)
         dt_btn_row.addWidget(self.dt_train_btn)
 
-        self.dt_use_btn = QPushButton("使用模型")
-        self.dt_use_btn.setStyleSheet("background-color: #6c5ce7; color: white; font-size: 12px;")
+        self.dt_use_btn = QPushButton("应用模型")
+        self.dt_use_btn.setObjectName("purpleBtn")
+        self.dt_use_btn.setCursor(Qt.PointingHandCursor)
+        self.dt_use_btn.setToolTip("将训练好的模型切换为当前决策引擎")
         self.dt_use_btn.setEnabled(False)
         self.dt_use_btn.clicked.connect(self._use_trained_model)
         dt_btn_row.addWidget(self.dt_use_btn)
@@ -516,7 +492,7 @@ class MainWindow(QMainWindow):
         tg.addWidget(self.dt_progress)
 
         self.dt_status_label = QLabel("")
-        self.dt_status_label.setStyleSheet("color: #74b9ff; font-size: 12px;")
+        self.dt_status_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 12px;")
         tg.addWidget(self.dt_status_label)
 
         layout.addWidget(train_group)
@@ -574,10 +550,11 @@ class MainWindow(QMainWindow):
             self._recorder.on_start()
             self._worker.agents.append(self._recorder)
 
-            self.rec_start_btn.setText("■ 停止录制")
-            self.rec_start_btn.setStyleSheet("background-color: #d63031; color: white;")
-            self.rec_status_label.setText(f"录制中... → {self._recorder.file_path}")
-            self.rec_status_label.setStyleSheet("color: #e17055; font-size: 12px; font-weight: bold;")
+            self.rec_start_btn.setText("■  停止录制")
+            self.rec_start_btn.setObjectName("stopBtn")
+            self.rec_start_btn.setStyle(self.rec_start_btn.style())
+            self.rec_status_label.setText(f"● 录制中... → {self._recorder.file_path}")
+            self.rec_status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px; font-weight: bold;")
             self._log(f"[录制] 开始 → {self._recorder.file_path}")
 
             # 启动定时器更新录制计数
@@ -603,10 +580,11 @@ class MainWindow(QMainWindow):
         path = self._recorder.file_path
         self._recorder.on_stop()
 
-        self.rec_start_btn.setText("● 开始录制")
-        self.rec_start_btn.setStyleSheet("background-color: #e17055; color: white;")
-        self.rec_status_label.setText(f"录制完成: {count} 条样本 → {path}")
-        self.rec_status_label.setStyleSheet("color: #00b894; font-size: 12px;")
+        self.rec_start_btn.setText("●  开始录制")
+        self.rec_start_btn.setObjectName("stopBtn")
+        self.rec_start_btn.setStyle(self.rec_start_btn.style())
+        self.rec_status_label.setText(f"✓ 录制完成: {count} 条样本 → {path}")
+        self.rec_status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px;")
         self._log(f"[录制] 停止, {count} 条样本已保存")
 
         # 自动填充训练数据目录
@@ -705,9 +683,9 @@ class MainWindow(QMainWindow):
         train_acc = metrics.get("final_train_acc", 0)
         epochs = metrics.get("epochs_trained", "?")
         self.dt_status_label.setText(
-            f"训练完成! val={val_acc:.3f} train={train_acc:.3f} ({epochs} epochs)"
+            f"✓ 训练完成  val={val_acc:.3f}  train={train_acc:.3f}  ({epochs} epochs)"
         )
-        self.dt_status_label.setStyleSheet("color: #00b894; font-size: 12px; font-weight: bold;")
+        self.dt_status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px; font-weight: bold;")
         self._log(f"[训练] 完成 → {model_dir} (val_acc={val_acc:.4f})")
         self._train_worker = None
 
@@ -715,8 +693,8 @@ class MainWindow(QMainWindow):
     def _on_dt_error(self, error: str):
         self.dt_train_btn.setEnabled(True)
         self.dt_progress.setVisible(False)
-        self.dt_status_label.setText(f"训练失败: {error}")
-        self.dt_status_label.setStyleSheet("color: #d63031; font-size: 12px;")
+        self.dt_status_label.setText(f"✗ 训练失败: {error}")
+        self.dt_status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px;")
         QMessageBox.critical(self, "训练失败", error)
         self._train_worker = None
 
@@ -1127,3 +1105,36 @@ class MainWindow(QMainWindow):
         if self._worker:
             self._worker.stop()
         event.accept()
+
+    # ===== 拖放支持 =====
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = urls[0].toLocalFile()
+        if not path:
+            return
+
+        ext = Path(path).suffix.lower()
+        video_exts = {'.mp4', '.avi', '.mkv', '.mov', '.flv', '.wmv'}
+        image_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        model_exts = {'.pt', '.onnx'}
+
+        if ext in video_exts:
+            self.source_type.setCurrentText("video")
+            self.path_input.setText(path)
+            self._log(f"已加载视频: {Path(path).name}")
+        elif ext in image_exts:
+            self.source_type.setCurrentText("image")
+            self.path_input.setText(path)
+            self._log(f"已加载图片: {Path(path).name}")
+        elif ext in model_exts:
+            self.model_combo.setEditText(path)
+            self._log(f"已加载模型: {Path(path).name}")
+        else:
+            self._log(f"不支持的文件类型: {ext}")

@@ -11,93 +11,7 @@ from PySide6.QtWidgets import (
 from ..core.trainer import TrainConfig
 from .train_worker import TrainWorker
 
-DIALOG_STYLE = """
-QDialog {
-    background-color: #0f0f23;
-}
-QGroupBox {
-    background-color: #16213e;
-    border: 1px solid #0f3460;
-    border-radius: 8px;
-    margin-top: 16px;
-    padding: 16px;
-    padding-top: 28px;
-    color: #e0e0e0;
-    font-weight: bold;
-    font-size: 14px;
-}
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 6px;
-    font-size: 15px;
-}
-QLabel {
-    color: #c0c0c0;
-    font-size: 14px;
-}
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-    background-color: #1a1a2e;
-    color: #e0e0e0;
-    border: 1px solid #0f3460;
-    border-radius: 4px;
-    padding: 6px 10px;
-    min-height: 28px;
-    font-size: 14px;
-}
-QPushButton {
-    border-radius: 6px;
-    padding: 8px 16px;
-    font-size: 14px;
-    font-weight: bold;
-    min-height: 32px;
-}
-QPushButton#trainBtn {
-    background-color: #00b894;
-    color: white;
-}
-QPushButton#trainBtn:hover {
-    background-color: #00a381;
-}
-QPushButton#trainBtn:disabled {
-    background-color: #555;
-}
-QPushButton#browseBtn {
-    background-color: #0f3460;
-    color: #e0e0e0;
-    padding: 6px 12px;
-    min-height: 28px;
-}
-QPushButton#useModelBtn {
-    background-color: #6c5ce7;
-    color: white;
-}
-QPushButton#useModelBtn:disabled {
-    background-color: #555;
-}
-QTextEdit {
-    background-color: #1a1a2e;
-    color: #a0e0a0;
-    border: 1px solid #0f3460;
-    border-radius: 6px;
-    font-family: Consolas, monospace;
-    font-size: 12px;
-    padding: 6px;
-}
-QProgressBar {
-    background-color: #1a1a2e;
-    border: 1px solid #0f3460;
-    border-radius: 4px;
-    text-align: center;
-    color: #e0e0e0;
-    font-size: 13px;
-    min-height: 24px;
-}
-QProgressBar::chunk {
-    background-color: #00b894;
-    border-radius: 3px;
-}
-"""
+from .styles import DIALOG_STYLESHEET
 
 
 class TrainDialog(QDialog):
@@ -108,7 +22,7 @@ class TrainDialog(QDialog):
         self.setWindowTitle("训练自定义模型")
         self.setMinimumSize(650, 700)
         self.resize(700, 750)
-        self.setStyleSheet(DIALOG_STYLE)
+        self.setStyleSheet(DIALOG_STYLESHEET)
 
         self._worker: TrainWorker | None = None
         self._best_model_path: str | None = None
@@ -234,12 +148,12 @@ class TrainDialog(QDialog):
         # === 操作按钮 ===
         btn_row = QHBoxLayout()
         self.train_btn = QPushButton("▶ 开始训练")
-        self.train_btn.setObjectName("trainBtn")
+        self.train_btn.setObjectName("startBtn")
         self.train_btn.clicked.connect(self._start_train)
         btn_row.addWidget(self.train_btn)
 
         self.use_model_btn = QPushButton("使用训练好的模型")
-        self.use_model_btn.setObjectName("useModelBtn")
+        self.use_model_btn.setObjectName("purpleBtn")
         self.use_model_btn.setEnabled(False)
         self.use_model_btn.clicked.connect(self._use_model)
         btn_row.addWidget(self.use_model_btn)

@@ -15,45 +15,7 @@ from PySide6.QtWidgets import (
 
 from ..decision.llm_provider import PROVIDER_PRESETS, create_provider
 from .annotate_worker import AnnotateWorker
-
-DIALOG_STYLE = """
-QDialog { background-color: #0f0f23; }
-QGroupBox {
-    background-color: #16213e; border: 1px solid #0f3460; border-radius: 8px;
-    margin-top: 14px; padding: 12px; padding-top: 24px;
-    color: #e0e0e0; font-weight: bold; font-size: 13px;
-}
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
-QLabel { color: #c0c0c0; font-size: 13px; }
-QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {
-    background-color: #1a1a2e; color: #e0e0e0;
-    border: 1px solid #0f3460; border-radius: 4px;
-    padding: 4px 8px; min-height: 24px; font-size: 13px;
-}
-QPushButton {
-    border-radius: 6px; padding: 6px 12px;
-    font-size: 13px; font-weight: bold; min-height: 28px;
-}
-QPushButton#startBtn { background-color: #00b894; color: white; }
-QPushButton#startBtn:hover { background-color: #00a381; }
-QPushButton#startBtn:disabled { background-color: #555; }
-QPushButton#stopBtn { background-color: #e94560; color: white; }
-QPushButton#stopBtn:disabled { background-color: #555; }
-QPushButton#browseBtn {
-    background-color: #0f3460; color: #e0e0e0;
-    padding: 4px 10px; min-height: 22px; font-size: 12px;
-}
-QTextEdit {
-    background-color: #1a1a2e; color: #a0e0a0;
-    border: 1px solid #0f3460; border-radius: 6px;
-    font-family: Consolas, monospace; font-size: 12px; padding: 4px;
-}
-QProgressBar {
-    background-color: #1a1a2e; border: 1px solid #0f3460; border-radius: 4px;
-    text-align: center; color: #e0e0e0; font-size: 13px; min-height: 22px;
-}
-QProgressBar::chunk { background-color: #00b894; border-radius: 3px; }
-"""
+from .styles import DIALOG_STYLESHEET, COLORS
 
 
 class AnnotateDialog(QDialog):
@@ -64,7 +26,7 @@ class AnnotateDialog(QDialog):
         self.setWindowTitle("LLM 自动标注")
         self.setMinimumSize(680, 720)
         self.resize(720, 760)
-        self.setStyleSheet(DIALOG_STYLE)
+        self.setStyleSheet(DIALOG_STYLESHEET)
 
         self._worker: AnnotateWorker | None = None
         self._save_path: str | None = None
@@ -138,13 +100,12 @@ class AnnotateDialog(QDialog):
         ag.addWidget(self.actions_input)
 
         self.send_image_check = QCheckBox("发送帧图像给 LLM（多模态，需模型支持 vision）")
-        self.send_image_check.setStyleSheet("color: #c0c0c0; font-size: 13px; padding-left: 4px;")
+        self.send_image_check.setToolTip("将视频帧编码为 JPEG 发送给 LLM，利用视觉信息辅助决策")
         ag.addWidget(self.send_image_check)
 
         self.tool_calling_check = QCheckBox("使用 Tool Calling 规范化输出（推荐）")
-        self.tool_calling_check.setStyleSheet("color: #c0c0c0; font-size: 13px; padding-left: 4px;")
         self.tool_calling_check.setChecked(True)
-        self.tool_calling_check.setToolTip("通过函数调用强制 LLM 返回结构化结果，避免格式解析问题")
+        self.tool_calling_check.setToolTip("通过函数调用 + enum 约束，强制 LLM 返回结构化结果")
         ag.addWidget(self.tool_calling_check)
 
         layout.addWidget(action_group)
@@ -185,13 +146,16 @@ class AnnotateDialog(QDialog):
 
         # ── 按钮 ──
         btn_row = QHBoxLayout()
-        self.start_btn = QPushButton("▶ 开始标注")
+        btn_row.setSpacing(8)
+        self.start_btn = QPushButton("▶  开始标注")
         self.start_btn.setObjectName("startBtn")
+        self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.clicked.connect(self._start_annotate)
         btn_row.addWidget(self.start_btn)
 
-        self.stop_btn = QPushButton("■ 停止")
+        self.stop_btn = QPushButton("■  停止")
         self.stop_btn.setObjectName("stopBtn")
+        self.stop_btn.setCursor(Qt.PointingHandCursor)
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop_annotate)
         btn_row.addWidget(self.stop_btn)
@@ -204,7 +168,7 @@ class AnnotateDialog(QDialog):
         layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #74b9ff; font-size: 12px;")
+        self.status_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 12px;")
         layout.addWidget(self.status_label)
 
         # ── 日志 ──
@@ -337,9 +301,9 @@ class AnnotateDialog(QDialog):
         self.stop_btn.setEnabled(False)
         self.progress_bar.setValue(100)
         self.status_label.setText(
-            f"完成! 标注 {stats['annotated']} 条 → {self._save_path}"
+            f"✓ 完成  标注 {stats['annotated']} 条 → {self._save_path}"
         )
-        self.status_label.setStyleSheet("color: #00b894; font-size: 12px; font-weight: bold;")
+        self.status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px; font-weight: bold;")
         self._worker = None
 
     @Slot(str)
@@ -347,8 +311,8 @@ class AnnotateDialog(QDialog):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
-        self.status_label.setText(f"失败: {error}")
-        self.status_label.setStyleSheet("color: #d63031; font-size: 12px;")
+        self.status_label.setText(f"✗ 失败: {error}")
+        self.status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px;")
         QMessageBox.critical(self, "标注失败", error)
         self._worker = None
 
