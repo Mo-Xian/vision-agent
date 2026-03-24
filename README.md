@@ -35,6 +35,12 @@
 
 ## 快速开始
 
+### 方式一：EXE 直接运行（推荐）
+
+从 [Releases](../../releases) 下载最新版压缩包，解压后双击 `VisionAgent.exe` 即可，无需安装 Python。
+
+### 方式二：源码运行
+
 ```bash
 # 安装依赖
 pip install -r requirements.txt
@@ -50,6 +56,29 @@ python main.py --no-gui
 # Windows 快速启动（自动创建 venv）
 start.bat
 ```
+
+### 方式三：自行打包 EXE
+
+```bash
+# 一键打包（自动创建 venv + 安装依赖 + PyInstaller 打包）
+build.bat
+
+# 或手动打包
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+pip install pyinstaller
+python build_exe.py
+
+# 产出在 dist/VisionAgent/ 目录下
+dist\VisionAgent\VisionAgent.exe
+```
+
+打包信息：
+- 使用 CPU 版 PyTorch，体积约 **886 MB**
+- 运行内存约 **400 MB**
+- 不需要目标机器安装 Python
+- 将 `dist/VisionAgent/` 整个目录打包分发即可
 
 ## 数据管线
 
@@ -122,6 +151,8 @@ LLM 返回的结构化结果（由 API 层面保证格式）：
 vision-agent/
 ├── main.py                          # CLI 入口
 ├── gui_app.py                       # PySide6 GUI 入口
+├── build.bat                        # 一键打包 EXE
+├── build_exe.py                     # PyInstaller 打包配置
 ├── config.yaml                      # 全局配置
 ├── profiles/                        # 场景 Profile 配置
 │   ├── wzry_5v5.yaml                # 王者荣耀 5v5
