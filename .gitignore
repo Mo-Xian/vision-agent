@@ -30,6 +30,9 @@ runs/
 *.avi
 *.mkv
 
+# PyInstaller
+*.spec
+
 # IDE
 .idea/
 .vscode/
