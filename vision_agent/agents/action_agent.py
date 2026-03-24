@@ -1,8 +1,8 @@
 """带决策和工具调用能力的 Agent。"""
 
 import logging
-import queue
 import threading
+import time
 from ..core.detector import DetectionResult
 from ..core.state import StateManager, SceneState
 from ..decision.base import DecisionEngine, Action
@@ -28,9 +28,9 @@ class ActionAgent(BaseAgent):
         self._engine = decision_engine
         self._tools = tool_registry
         self._state = state_manager or StateManager()
-        self._action_queue: queue.Queue[list[Action]] = queue.Queue(maxsize=1)
         self._decision_thread: threading.Thread | None = None
         self._running = False
+        self._pending_state = None
         self._stats = {"decisions": 0, "actions_executed": 0, "actions_failed": 0}
         self._on_log = on_log
 
@@ -51,11 +51,6 @@ class ActionAgent(BaseAgent):
     def on_detection(self, result: DetectionResult):
         """接收检测结果，更新状态，触发异步决策。"""
         state = self._state.update(result)
-        # 非阻塞放入队列，丢弃旧的（只保留最新状态）
-        try:
-            self._action_queue.get_nowait()
-        except queue.Empty:
-            pass
         self._pending_state = (result, state)
 
     def _decision_loop(self):
@@ -63,7 +58,7 @@ class ActionAgent(BaseAgent):
         while self._running:
             state_data = getattr(self, '_pending_state', None)
             if state_data is None:
-                threading.Event().wait(0.01)
+                time.sleep(0.01)
                 continue
 
             result, state = state_data

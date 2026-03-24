@@ -63,6 +63,8 @@ class AutoTrainer:
         from ..data.auto_annotator import AutoAnnotator
 
         detector = Detector(model=yolo_model)
+        if not llm_api_key and llm_provider_name not in ("ollama", "local"):
+            raise ValueError(f"LLM provider '{llm_provider_name}' 需要 API key，但未提供")
         provider = create_provider(llm_provider_name, llm_api_key or "ollama", llm_model, llm_base_url)
 
         annotator = AutoAnnotator(
@@ -103,25 +105,20 @@ class AutoTrainer:
 
         model_dir = str(output_dir / "model")
 
-        from ..data.dataset import ActionDataset
         from ..data.train import DecisionTrainer
 
-        dataset = ActionDataset(str(output_dir))
-        total = dataset.load()
-        self._log(f"加载 {total} 条训练数据")
-
         trainer = DecisionTrainer(
-            dataset=dataset,
+            data_dir=str(output_dir),
             output_dir=model_dir,
             model_type=model_type,
             epochs=epochs,
-        )
-
-        metrics = trainer.train(
             progress_callback=lambda epoch, total_ep, loss, t_acc, v_acc: (
                 progress_callback("training", epoch / max(total_ep, 1)) if progress_callback else None
             ),
         )
+
+        self._log(f"开始训练...")
+        metrics = trainer.run()
 
         result["model_dir"] = model_dir
         result["accuracy"] = metrics.get("best_val_acc", 0)

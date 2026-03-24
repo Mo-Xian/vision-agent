@@ -256,7 +256,7 @@ class AutoAnnotator:
                         continue
 
                     # LLM 标注
-                    action_key = self._query_llm(state.scene_summary, frame)
+                    action_key, action_reason = self._query_llm(state.scene_summary, frame)
                     if action_key is None:
                         stats["errors"] += 1
                         if self.progress_callback:
@@ -281,6 +281,7 @@ class AutoAnnotator:
                             "type": "llm_annotated",
                             "action": "press",
                             "key": action_key,
+                            "reason": action_reason,
                         },
                         "action_timestamp": round(video_time, 3),
                     }
@@ -318,8 +319,12 @@ class AutoAnnotator:
             time.sleep(_MIN_REQUEST_INTERVAL - elapsed)
         self._last_request_time = time.time()
 
-    def _query_llm(self, scene_summary: str, frame: np.ndarray) -> str | None:
-        """向 LLM 查询当前场景的动作，带速率限制和重试。"""
+    def _query_llm(self, scene_summary: str, frame: np.ndarray) -> tuple[str | None, str]:
+        """向 LLM 查询当前场景的动作，带速率限制和重试。
+
+        Returns:
+            (action_key, reason) — action_key 为 None 表示失败
+        """
         # 构建消息内容
         if self.send_image:
             img_b64 = self._encode_frame(frame)
@@ -348,13 +353,15 @@ class AutoAnnotator:
                 if response.tool_calls:
                     for tc in response.tool_calls:
                         if tc.get("name") == "decide_action":
-                            action = tc.get("input", {}).get("action", "")
+                            tc_input = tc.get("input", {})
+                            action = tc_input.get("action", "")
+                            reason = tc_input.get("reason", "")
                             if action and action in self.actions:
-                                return action
+                                return action, reason
                             # tool call 返回了非法动作
                             if action:
                                 self._log(f"[LLM] tool_call 返回未知动作 '{action}'，已丢弃")
-                                return None
+                                return None, ""
 
                 # ── Fallback：从文本响应中解析（兼容不支持 tool calling 的模型） ──
                 candidates = []
@@ -379,18 +386,18 @@ class AutoAnnotator:
 
                 if not candidates:
                     self._log("[LLM] 返回完全空响应")
-                    return None
+                    return None, ""
 
                 # 逐个候选文本尝试解析
                 for text in candidates:
-                    action = self._parse_action(text)
+                    action, reason = self._parse_action(text)
                     if action is not None:
-                        return action
+                        return action, reason
 
                 # 全部解析失败
                 preview = candidates[0][:200] if candidates else "empty"
                 self._log(f"[LLM] 解析失败, 候选数={len(candidates)}, 首段: {preview}")
-                return None
+                return None, ""
 
             except Exception as e:
                 err_str = str(e).lower()
@@ -404,13 +411,18 @@ class AutoAnnotator:
                     continue
 
                 self._log(f"[LLM 错误] {type(e).__name__}: {e}")
-                return None
+                return None, ""
 
-        return None
+        return None, ""
 
-    def _parse_action(self, text: str) -> str | None:
-        """从 LLM 响应中解析动作名称。返回 None 表示解析失败或动作不合法。"""
+    def _parse_action(self, text: str) -> tuple[str | None, str]:
+        """从 LLM 响应中解析动作名称和理由。
+
+        Returns:
+            (action, reason) — action 为 None 表示解析失败或动作不合法
+        """
         action = ""
+        reason = ""
 
         # 尝试解析 JSON
         json_str = text.strip()
@@ -422,6 +434,7 @@ class AutoAnnotator:
         try:
             data = json.loads(json_str.strip())
             action = data.get("action", "")
+            reason = data.get("reason", "")
         except json.JSONDecodeError:
             # fallback: 在文本中查找 JSON 对象
             start = text.find("{")
@@ -430,6 +443,7 @@ class AutoAnnotator:
                 try:
                     data = json.loads(text[start:end])
                     action = data.get("action", "")
+                    reason = data.get("reason", "")
                 except json.JSONDecodeError:
                     pass
 
@@ -442,18 +456,18 @@ class AutoAnnotator:
                     break
 
         if not action:
-            return None
+            return None, ""
 
         # 验证动作合法性（精确匹配）
         if action in self.actions:
-            return action
+            return action, reason
 
         # 模糊匹配（忽略大小写）
         action_lower = action.lower()
         for a in self.actions:
             if a.lower() == action_lower:
-                return a
+                return a, reason
 
         # 未知动作 → 丢弃，避免污染训练数据
         self._log(f"[LLM] 未知动作 '{action}' 不在预设列表 {self.actions} 中，已丢弃")
-        return None
+        return None, ""

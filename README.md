@@ -40,6 +40,7 @@
 | **AutoPilot** | 自动识别场景 → 匹配 Profile → LLM 标注 → 训练模型 → 热加载，全自动 |
 | **人工录制** | 一边操作一边录制键盘/鼠标 + 检测结果，生成训练数据 |
 | **LLM 自动标注** | 视频抽帧 → YOLO 检测 → 发给 LLM 判断动作 → 生成训练数据（支持 Tool Calling） |
+| **标注可视化回放** | 加载标注 JSONL + 视频，逐帧回放检测框和 LLM 决策动作/理由，含动作分布统计 |
 | **YOLO 训练** | GUI 内直接配置数据集和参数，一键训练自定义检测模型 |
 | **动作执行** | 键盘模拟、鼠标模拟、HTTP API 调用、Shell 命令 |
 | **ROI 提取** | 从固定区域提取特征（血条比例、颜色、亮度），辅助决策 |
@@ -130,7 +131,18 @@ dist\VisionAgent\VisionAgent.exe
 6. 切换决策引擎到 `trained`，配置动作→按键映射
 7. 启动检测，模型自动决策
 
-### 场景三：全自动 AutoPilot
+### 场景三：查看 LLM 标注结果
+
+1. 完成 LLM 自动标注后，点击「查看标注」按钮
+2. 自动加载最新的 JSONL 标注文件和对应视频
+3. 逐帧查看：
+   - 视频帧 + YOLO 检测框叠加
+   - 底部横幅显示 LLM 选择的动作（彩色标识）和决策理由
+   - 右侧面板显示检测目标详情和帧元数据
+4. 支持播放/暂停、前后帧切换、滑块快速跳转
+5. 动作分布统计一目了然：各动作占比和数量
+
+### 场景四：全自动 AutoPilot
 
 1. 在 `profiles/` 下创建场景 YAML 配置
 2. GUI → 场景 Tab → 勾选「启用 AutoPilot」
@@ -157,8 +169,9 @@ python main.py --decision trained --decision-model runs/decision/exp1
 ### 方式二：LLM 自动标注
 1. GUI 中打开「录制与训练」标签页
 2. 点击「LLM 自动标注」，配置视频/模型/LLM
-3. 标注完成后点击「开始训练」
-4. 切换决策引擎到 `trained`，配置动作映射
+3. 标注完成后点击「查看标注」可视化回放检测框 + LLM 决策
+4. 确认标注质量后点击「开始训练」
+5. 切换决策引擎到 `trained`，配置动作映射
 
 #### LLM 标注输出规范化
 
@@ -247,7 +260,7 @@ vision-agent/
 │   ├── agents/                      # 智能 Agent
 │   ├── sources/                     # 视频源 (screen/camera/video/image)
 │   ├── server/                      # WebSocket 服务
-│   └── gui/                         # PySide6 GUI 组件
+│   └── gui/                         # PySide6 GUI 组件（含标注可视化回放）
 ├── tests/
 │   └── test_auto_annotator.py       # 单元测试
 └── requirements.txt

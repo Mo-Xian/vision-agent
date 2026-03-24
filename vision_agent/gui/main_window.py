@@ -17,7 +17,7 @@ from ..sources import create_source
 from ..core.detector import Detector, DetectionResult
 from ..core.model_manager import ModelManager
 from ..core.state import StateManager
-from ..decision import RuleEngine, LLMEngine, TrainedEngine, HierarchicalEngine, RLEngine, PROVIDER_PRESETS, create_provider
+from ..decision import RuleEngine, LLMEngine, TrainedEngine, HierarchicalEngine, RLEngine, PROVIDER_PRESETS, create_provider, Action
 from ..profiles import ProfileManager, SceneProfile
 from ..core.scene_classifier import SceneClassifier
 from ..core.roi_extractor import ROIExtractor
@@ -421,6 +421,13 @@ class MainWindow(QMainWindow):
         self.auto_annotate_btn.setToolTip("用 LLM 自动标注视频帧，生成训练数据")
         self.auto_annotate_btn.clicked.connect(self._open_annotate_dialog)
         rec_btn_row.addWidget(self.auto_annotate_btn)
+
+        self.view_annotation_btn = QPushButton("查看标注")
+        self.view_annotation_btn.setObjectName("infoBtn")
+        self.view_annotation_btn.setCursor(Qt.PointingHandCursor)
+        self.view_annotation_btn.setToolTip("可视化回放 LLM 标注结果：检测框 + 决策动作")
+        self.view_annotation_btn.clicked.connect(self._open_annotation_viewer)
+        rec_btn_row.addWidget(self.view_annotation_btn)
         rg.addLayout(rec_btn_row)
 
         self.rec_status_label = QLabel("就绪，可开始录制")
@@ -569,10 +576,10 @@ class MainWindow(QMainWindow):
         """刷新 Profile 列表。"""
         current = self.profile_combo.currentText() if hasattr(self, 'profile_combo') else ""
         self.profile_combo.clear()
-        self.profile_combo.addItem("(无)")
+        self.profile_combo.addItem("(无)", "")
         profiles = self._profile_mgr.load_all()
         for name, p in profiles.items():
-            self.profile_combo.addItem(f"{p.display_name} ({name})")
+            self.profile_combo.addItem(f"{p.display_name} ({name})", name)
         if current:
             idx = self.profile_combo.findText(current)
             if idx >= 0:
@@ -585,9 +592,8 @@ class MainWindow(QMainWindow):
             self.profile_info.clear()
             return
 
-        # 从显示文本提取 name
-        name = text.split("(")[-1].rstrip(")") if "(" in text else text
-        profile = self._profile_mgr.get(name)
+        name = self.profile_combo.currentData() or ""
+        profile = self._profile_mgr.get(name) if name else None
         if not profile:
             return
 
@@ -640,6 +646,25 @@ class MainWindow(QMainWindow):
         if save_path:
             self.dt_data_dir.setText(str(Path(save_path).parent))
             self._log(f"[标注] 数据已保存到 {save_path}")
+
+    @Slot()
+    def _open_annotation_viewer(self):
+        """打开标注结果可视化回放。"""
+        from .annotation_viewer import AnnotationViewer
+        # 尝试自动填充路径
+        jsonl_path = ""
+        video_path = ""
+        data_dir = self.dt_data_dir.text().strip() if hasattr(self, 'dt_data_dir') else ""
+        if data_dir and Path(data_dir).is_dir():
+            # 找最新的 .jsonl 文件
+            jsonl_files = sorted(Path(data_dir).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if jsonl_files:
+                jsonl_path = str(jsonl_files[0])
+        if self.source_type.currentText() == "video":
+            video_path = self.path_input.text().strip()
+
+        dialog = AnnotationViewer(self, jsonl_path=jsonl_path, video_path=video_path)
+        dialog.exec()
 
     @Slot()
     def _toggle_recording(self):
@@ -988,16 +1013,37 @@ class MainWindow(QMainWindow):
             engine.set_log_callback(self._decision_log_callback)
             self._log(f"LLM 引擎: {provider_name}/{model}")
         elif engine_type == "hierarchical":
+            # 从 Profile 获取配置，构建有实际规则的分层引擎
+            name = self.profile_combo.currentData() if hasattr(self, 'profile_combo') else ""
+            profile = self._profile_mgr.get(name) if name else None
+
             micro = RuleEngine()
+            # 添加默认规则：检测到目标时执行第一个动作
+            if profile and profile.actions:
+                first_action = profile.actions[0]
+                key_map = profile.action_key_map.get(first_action, {})
+                key = key_map.get("key", first_action)
+                def _make_rule(k):
+                    return lambda r, s: Action(
+                        tool_name="keyboard",
+                        parameters={"action": "press", "key": k},
+                    ) if r.detections else None
+                micro.add_rule("default_action", _make_rule(key))
+                self._log(f"分层引擎: 默认规则 → {first_action} ({key})")
+            else:
+                micro.add_rule("detect_any", lambda r, s: Action(
+                    tool_name="keyboard",
+                    parameters={"action": "press", "key": "space"},
+                ) if r.detections else None)
+                self._log("分层引擎: 默认规则 → space（未配置 Profile）")
+
             engine = HierarchicalEngine(micro=micro)
             engine.set_log_callback(self._decision_log_callback)
-            self._log("分层引擎: micro=rule")
         elif engine_type == "rl":
             # 从 Profile 获取动作列表，否则使用默认
-            profile_name = self.profile_combo.currentText() if hasattr(self, 'profile_combo') else "(无)"
             actions = ["idle", "attack", "retreat"]
             action_key_map = {}
-            name = profile_name.split("(")[-1].rstrip(")") if "(" in profile_name else ""
+            name = self.profile_combo.currentData() if hasattr(self, 'profile_combo') else ""
             profile = self._profile_mgr.get(name) if name else None
             if profile:
                 actions = profile.actions or actions
@@ -1070,7 +1116,7 @@ class MainWindow(QMainWindow):
         self._worker.error.connect(self._on_error)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.agent_stats_updated.connect(self._on_agent_stats)
-        self._worker.decision_log.connect(self._on_decision_log)
+        self._worker.decision_log.connect(self._on_decision_log, Qt.QueuedConnection)
         self._worker.start()
 
         self.start_btn.setEnabled(False)
@@ -1100,7 +1146,7 @@ class MainWindow(QMainWindow):
                 self.scene_status_text.setPlainText(
                     f"当前场景: {scene}\n"
                     f"已加载引擎: {', '.join(engines) if engines else '无'}\n"
-                    f"帧缓冲: {len(self._auto_pilot._frame_buffer)}"
+                    f"帧缓冲: {self._auto_pilot.buffer_size}"
                 )
 
         if self._frame_count % 30 == 1 and result.detections:

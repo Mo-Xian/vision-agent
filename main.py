@@ -10,7 +10,11 @@ from vision_agent.core import Detector, Visualizer, ModelManager, StateManager
 from vision_agent.core.pipeline import Pipeline
 from vision_agent.server import WebSocketServer
 from vision_agent.agents import DemoAgent, ActionAgent
-from vision_agent.decision import RuleEngine, LLMEngine, TrainedEngine, create_provider
+from vision_agent.decision import (
+    RuleEngine, LLMEngine, TrainedEngine,
+    HierarchicalEngine, RLEngine,
+    create_provider,
+)
 from vision_agent.data.recorder import DataRecorder
 from vision_agent.tools import ToolRegistry
 from vision_agent.tools.keyboard import KeyboardTool
@@ -92,6 +96,27 @@ def build_decision_engine(config: dict, tool_registry: ToolRegistry):
             max_tokens=llm_cfg.get("max_tokens", 1024),
         )
 
+    elif engine_type == "hierarchical":
+        hier_cfg = dec_cfg.get("hierarchical", {})
+        micro = RuleEngine(first_match=True)
+        return HierarchicalEngine(
+            micro=micro,
+            strategy_interval=hier_cfg.get("strategy_interval", 5.0),
+            tactic_interval=hier_cfg.get("tactic_interval", 1.0),
+        )
+
+    elif engine_type == "rl":
+        rl_cfg = dec_cfg.get("rl", {})
+        actions = rl_cfg.get("actions", ["idle", "attack", "retreat"])
+        action_key_map = rl_cfg.get("action_key_map", {})
+        return RLEngine(
+            actions=actions,
+            action_key_map=action_key_map,
+            training=rl_cfg.get("training", True),
+            save_dir=rl_cfg.get("save_dir", "runs/rl"),
+            model_path=rl_cfg.get("model_path", ""),
+        )
+
     return None
 
 
@@ -133,7 +158,7 @@ def main():
     parser.add_argument("--no-ws", action="store_true", help="禁用 WebSocket 服务")
     parser.add_argument("--no-agent", action="store_true", help="禁用 Agent")
     parser.add_argument("--agent", choices=["demo", "action"], default="action", help="Agent 类型")
-    parser.add_argument("--decision", choices=["rule", "llm", "trained", "none"], help="覆盖决策引擎类型")
+    parser.add_argument("--decision", choices=["rule", "llm", "trained", "hierarchical", "rl", "none"], help="覆盖决策引擎类型")
     parser.add_argument("--decision-model", help="覆盖 trained 引擎的模型目录")
     parser.add_argument("--record", action="store_true", help="启用数据录制模式")
     parser.add_argument("--record-dir", help="覆盖录制数据保存目录")

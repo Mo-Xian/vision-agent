@@ -1,6 +1,5 @@
 import logging
 import time
-import threading
 from .base import DecisionEngine, Action
 from ..core.detector import DetectionResult
 from ..core.state import SceneState

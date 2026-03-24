@@ -62,8 +62,8 @@ class StateManager:
 
         detail_lines = []
         for det in result.detections[:10]:
-            cx = det.bbox_norm[0] + det.bbox_norm[2] / 2
-            cy = det.bbox_norm[1] + det.bbox_norm[3] / 2
+            cx = (det.bbox_norm[0] + det.bbox_norm[2]) / 2
+            cy = (det.bbox_norm[1] + det.bbox_norm[3]) / 2
             pos = self._describe_position(cx, cy)
             detail_lines.append(f"  - {det.class_name} (conf={det.confidence:.2f}) 位于{pos}")
 

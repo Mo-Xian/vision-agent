@@ -1,7 +1,6 @@
 """主流程管线：视频采集 → 检测 → 状态更新 → 决策 → 执行 → 可视化。"""
 
 import logging
-import time
 from ..sources.base import BaseSource
 from ..agents.base import BaseAgent
 from .detector import Detector
@@ -123,6 +122,15 @@ class Pipeline:
                 if self.ws_server:
                     self.ws_server.broadcast(result)
 
+                # 独立决策引擎（AutoPilot 热加载的引擎走这里）
+                if self._decision_engine and state:
+                    try:
+                        actions = self._decision_engine.decide(result, state)
+                        if actions:
+                            self._execute_standalone_actions(actions)
+                    except Exception as e:
+                        logger.error(f"决策引擎异常: {e}")
+
                 # Agent 处理
                 for agent in self.agents:
                     agent.on_detection(result)
@@ -143,6 +151,17 @@ class Pipeline:
         finally:
             self.stop()
 
+    def _execute_standalone_actions(self, actions):
+        """执行独立决策引擎产生的动作（通过已注册的 Agent 中的 ActionAgent）。"""
+        from ..agents.action_agent import ActionAgent
+        for agent in self.agents:
+            if isinstance(agent, ActionAgent):
+                agent._execute_actions(actions)
+                return
+        # 没有 ActionAgent 时仅记录
+        action_names = [a.tool_name for a in actions]
+        logger.warning(f"决策引擎产生动作 {action_names}，但无 ActionAgent 可执行")
+
     def switch_model(self, name: str) -> None:
         """运行时切换检测模型。"""
         if not self.model_manager:
@@ -154,7 +173,11 @@ class Pipeline:
         """停止所有组件。"""
         self._running = False
         if self._decision_engine:
-            self._decision_engine.on_stop()
+            try:
+                self._decision_engine.on_stop()
+            except Exception:
+                pass
+            self._decision_engine = None
         for agent in self.agents:
             agent.on_stop()
         self.source.stop()

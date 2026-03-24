@@ -34,6 +34,7 @@ class AutoPilot:
         self._on_engine_ready = on_engine_ready
 
         self._current_scene = "unknown"
+        self._lock = threading.Lock()
         self._active_engines: dict[str, object] = {}
         self._training_in_progress: set[str] = set()
         self._running = False
@@ -71,22 +72,30 @@ class AutoPilot:
             if self._on_scene_changed:
                 self._on_scene_changed(old, scene)
 
-            if (
-                scene != "unknown"
-                and scene not in self._active_engines
-                and scene not in self._training_in_progress
-                and self._auto_train_enabled
-            ):
+            with self._lock:
+                should_train = (
+                    scene != "unknown"
+                    and scene not in self._active_engines
+                    and scene not in self._training_in_progress
+                    and self._auto_train_enabled
+                )
+                if should_train:
+                    self._training_in_progress.add(scene)
+            if should_train:
                 profile = self._profile_mgr.get(scene)
                 if profile and profile.auto_train.get("enabled", False):
                     self._trigger_auto_train(profile)
+                else:
+                    with self._lock:
+                        self._training_in_progress.discard(scene)
 
         return self._current_scene
 
     def get_engine(self, scene_name: str = ""):
         """获取当前场景（或指定场景）的决策引擎。"""
         name = scene_name or self._current_scene
-        return self._active_engines.get(name)
+        with self._lock:
+            return self._active_engines.get(name)
 
     @property
     def current_scene(self) -> str:
@@ -94,11 +103,15 @@ class AutoPilot:
 
     @property
     def available_engines(self) -> list[str]:
-        return list(self._active_engines.keys())
+        with self._lock:
+            return list(self._active_engines.keys())
+
+    @property
+    def buffer_size(self) -> int:
+        return len(self._frame_buffer)
 
     def _trigger_auto_train(self, profile):
         """在后台线程触发自动训练。"""
-        self._training_in_progress.add(profile.name)
         self._log(f"[自动训练] 触发: {profile.name} (缓冲区 {len(self._frame_buffer)} 帧)")
 
         thread = threading.Thread(
@@ -138,15 +151,19 @@ class AutoPilot:
 
             if result.get("model_dir") and Path(result["model_dir"]).exists():
                 profile.decision_model_dir = result["model_dir"]
+                profile.decision_engine = "trained"
                 self._try_load_engine(profile)
-                self._log(f"[自动训练] {profile.name} 完成, 模型已热加载")
+                # 持久化到 YAML，重启后不丢失
+                self._save_profile(profile)
+                self._log(f"[自动训练] {profile.name} 完成, 模型已热加载并保存")
             else:
                 self._log(f"[自动训练] {profile.name} 训练失败或数据不足")
 
         except Exception as e:
             self._log(f"[自动训练] {profile.name} 异常: {e}")
         finally:
-            self._training_in_progress.discard(profile.name)
+            with self._lock:
+                self._training_in_progress.discard(profile.name)
 
     def _try_load_engine(self, profile):
         """尝试加载 profile 对应的决策引擎。"""
@@ -158,12 +175,24 @@ class AutoPilot:
                     model_dir=profile.decision_model_dir,
                     action_key_map=profile.action_key_map,
                 )
-                self._active_engines[profile.name] = engine
+                with self._lock:
+                    self._active_engines[profile.name] = engine
                 if self._on_engine_ready:
                     self._on_engine_ready(profile.name, engine)
                 self._log(f"引擎加载: {profile.name} (trained)")
         except Exception as e:
             self._log(f"引擎加载失败: {profile.name} → {e}")
+
+    def _save_profile(self, profile):
+        """将 profile 变更写回 YAML 文件。"""
+        try:
+            from ..profiles.loader import save_profile
+            profile_dir = self._profile_mgr._dir
+            save_path = str(profile_dir / f"{profile.name}.yaml")
+            save_profile(profile, save_path)
+            self._log(f"Profile 已保存: {save_path}")
+        except Exception as e:
+            self._log(f"Profile 保存失败: {e}")
 
     def _log(self, msg: str):
         logger.info(msg)

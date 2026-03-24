@@ -50,7 +50,9 @@ class SceneClassifier:
         counter = Counter(recent)
         most_common, count = counter.most_common(1)[0]
 
-        if count >= self._stability_threshold and most_common != self._current_scene:
+        # 启动阶段（历史帧不足）：要求全部一致即可切换
+        required = min(self._stability_threshold, len(recent))
+        if count >= required and most_common != self._current_scene:
             old = self._current_scene
             self._current_scene = most_common
             logger.info("场景切换: %s -> %s", old, self._current_scene)
