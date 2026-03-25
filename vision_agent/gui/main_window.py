@@ -6,11 +6,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Slot, QSettings, QMimeData
 from PySide6.QtGui import QFont, QIcon, QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGroupBox,
-    QLabel, QComboBox, QLineEdit, QPushButton, QSpinBox,
-    QDoubleSpinBox, QFileDialog, QTextEdit, QSplitter, QMessageBox,
-    QScrollArea, QSizePolicy, QDialog, QTabWidget, QFormLayout,
-    QProgressBar, QCheckBox, QStackedWidget, QButtonGroup, QFrame,
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
+    QLabel, QComboBox, QLineEdit, QPushButton,
+    QFileDialog, QTextEdit, QSplitter, QMessageBox,
+    QDialog, QTabWidget, QCheckBox, QStackedWidget, QFrame,
 )
 
 from ..sources import create_source
@@ -32,7 +31,8 @@ from ..agents.action_agent import ActionAgent
 from .video_widget import VideoWidget
 from .worker import DetectionWorker
 from .decision_train_worker import DecisionTrainWorker
-from .chat_panel import ChatPanel
+from .train_panel import TrainPanel
+from .agent_panel import AgentPanel
 
 from .styles import MAIN_STYLESHEET, COLORS
 
@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
         self._auto_pilot: AutoPilot | None = None
         self._current_mode = "agent"
         self._init_ui()
+        self._connect_signals()
         self._scan_models()
         self._load_settings()
 
@@ -138,28 +139,15 @@ class MainWindow(QMainWindow):
         mode_row.addWidget(self.mode_agent_btn)
         left_layout.addLayout(mode_row)
 
-        # -- 模式内容 (Stacked) --
+        # -- 模式面板 (Stacked) --
         self.mode_stack = QStackedWidget()
-
-        # 训练模式 tabs
-        self.train_tabs = QTabWidget()
-        self._build_train_data_tab()
-        self._build_train_annotate_tab()
-        self._build_train_training_tab()
-        self._build_train_model_tab()
-        self.mode_stack.addWidget(self.train_tabs)  # index 0
-
-        # Agent 模式 tabs
-        self.agent_tabs = QTabWidget()
-        self._build_agent_source_tab()
-        self._build_agent_engine_tab()
-        self._build_agent_scene_tab()
-        self._build_agent_chat_tab()
-        self.mode_stack.addWidget(self.agent_tabs)  # index 1
-
+        self.train_panel = TrainPanel()
+        self.agent_panel = AgentPanel()
+        self.mode_stack.addWidget(self.train_panel)   # index 0
+        self.mode_stack.addWidget(self.agent_panel)   # index 1
         left_layout.addWidget(self.mode_stack, 1)
 
-        # -- Agent 控制区（仅 Agent 模式可见） --
+        # -- Agent 控制区 --
         self.agent_controls = QWidget()
         ac_layout = QVBoxLayout(self.agent_controls)
         ac_layout.setContentsMargins(0, 0, 0, 0)
@@ -188,6 +176,32 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.agent_controls)
 
         # -- 状态栏 --
+        self._build_status_bar(left_layout)
+
+        # -- 日志区域 --
+        self.log_tabs = QTabWidget()
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_tabs.addTab(self.log_text, "日志")
+        self.decision_log_text = QTextEdit()
+        self.decision_log_text.setReadOnly(True)
+        self.log_tabs.addTab(self.decision_log_text, "决策")
+        left_layout.addWidget(self.log_tabs, 0)
+
+        splitter.addWidget(left_panel)
+
+        # ===== 右侧视频预览 =====
+        self.video_widget = VideoWidget()
+        splitter.addWidget(self.video_widget)
+
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([380, 1000])
+
+        # 初始化模式
+        self._switch_mode("agent")
+
+    def _build_status_bar(self, parent_layout):
         status_w = QWidget()
         status_w.setStyleSheet(
             f"background-color: {COLORS['bg_card']}; "
@@ -215,604 +229,54 @@ class MainWindow(QMainWindow):
             f"color: {COLORS['purple']}; font-size: 12px; padding: 0;"
         )
         status_layout.addWidget(self.scene_label)
-        left_layout.addWidget(status_w)
-
-        # -- 日志区域 --
-        self.log_tabs = QTabWidget()
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_tabs.addTab(self.log_text, "日志")
-        self.decision_log_text = QTextEdit()
-        self.decision_log_text.setReadOnly(True)
-        self.log_tabs.addTab(self.decision_log_text, "决策")
-        left_layout.addWidget(self.log_tabs, 0)
-
-        splitter.addWidget(left_panel)
-
-        # ===== 右侧视频预览 =====
-        self.video_widget = VideoWidget()
-        splitter.addWidget(self.video_widget)
-
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([380, 1000])
-
-        # 初始化模式
-        self._switch_mode("agent")
+        parent_layout.addWidget(status_w)
 
     # ================================================================
-    #  训练模式 Tabs
+    #  信号连接（面板 → 主窗口）
     # ================================================================
 
-    def _build_train_data_tab(self):
-        """训练 Tab 1: 数据获取"""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
+    def _connect_signals(self):
+        tp = self.train_panel
+        ap = self.agent_panel
 
-        # ── 自动学习（一键） ──
-        auto_group = QGroupBox("一键自动学习")
-        ag = QVBoxLayout(auto_group)
-        ag.addWidget(QLabel("输入场景描述，自动完成全部流程：\n搜索下载 → YOLO检测 → LLM标注 → 训练 → RL强化 → 生成模型"))
-        auto_learn_btn = QPushButton("打开自动学习")
-        auto_learn_btn.setObjectName("startBtn")
-        auto_learn_btn.setCursor(Qt.PointingHandCursor)
-        auto_learn_btn.clicked.connect(self._open_auto_learn)
-        ag.addWidget(auto_learn_btn)
-        layout.addWidget(auto_group)
-
-        # ── LLM 配置（标注/自动学习共用） ──
-        llm_group = QGroupBox("LLM 配置（标注 / 自动学习共用）")
-        lg = QFormLayout(llm_group)
-        lg.setSpacing(6)
-
-        self.llm_provider_combo = QComboBox()
-        self.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
-        self.llm_provider_combo.currentTextChanged.connect(self._on_provider_changed)
-        lg.addRow("供应商", self.llm_provider_combo)
-
-        self.llm_model_combo = QComboBox()
-        self.llm_model_combo.setEditable(True)
-        lg.addRow("模型", self.llm_model_combo)
-
-        self.llm_api_key = QLineEdit()
-        self.llm_api_key.setEchoMode(QLineEdit.Password)
-        self.llm_api_key.setPlaceholderText("API Key 或留空用环境变量")
-        lg.addRow("API Key", self.llm_api_key)
-
-        self.llm_base_url = QLineEdit()
-        self.llm_base_url.setPlaceholderText("留空用默认地址")
-        lg.addRow("Base URL", self.llm_base_url)
-
-        self.llm_test_btn = QPushButton("测试连接")
-        self.llm_test_btn.setObjectName("infoBtn")
-        self.llm_test_btn.setCursor(Qt.PointingHandCursor)
-        self.llm_test_btn.clicked.connect(self._test_llm_connection)
-        lg.addRow("", self.llm_test_btn)
-
-        layout.addWidget(llm_group)
+        # 训练面板
+        tp.auto_learn_btn.clicked.connect(self._open_auto_learn)
+        tp.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
+        tp.llm_provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        tp.llm_test_btn.clicked.connect(self._test_llm_connection)
+        tp.load_model_btn.clicked.connect(self._load_custom_model)
+        tp.train_btn_open.clicked.connect(self._open_train_dialog)
+        tp.auto_annotate_btn.clicked.connect(self._open_annotate_dialog)
+        tp.view_annotation_btn.clicked.connect(self._open_annotation_viewer)
+        tp.rec_browse_btn.clicked.connect(lambda: self._browse_dir_to(tp.rec_dir_input))
+        tp.rec_start_btn.clicked.connect(self._toggle_recording)
+        tp.dt_data_browse.clicked.connect(lambda: self._browse_dir_to(tp.dt_data_dir))
+        tp.dt_preview_btn.clicked.connect(self._preview_data)
+        tp.dt_train_btn.clicked.connect(self._start_decision_train)
+        tp.dt_use_btn.clicked.connect(self._use_trained_model)
+        tp.profile_combo.currentTextChanged.connect(self._on_profile_changed)
+        tp.refresh_btn.clicked.connect(self._refresh_profiles)
+        tp.export_btn.clicked.connect(self._export_config)
+        tp.import_btn.clicked.connect(self._import_config)
 
         # 初始化供应商预设
-        self._on_provider_changed(self.llm_provider_combo.currentText())
+        self._on_provider_changed(tp.llm_provider_combo.currentText())
 
-        # ── YOLO 检测模型 ──
-        yolo_group = QGroupBox("YOLO 检测模型")
-        yg = QVBoxLayout(yolo_group)
-
-        self.model_combo = QComboBox()
-        self.model_combo.addItems(["yolov8n.pt", "yolov8s.pt", "yolov8m.pt", "yolov8l.pt"])
-        self.model_combo.setEditable(True)
-        yg.addWidget(self.model_combo)
-
-        yolo_btn_row = QHBoxLayout()
-        self.load_model_btn = QPushButton("加载自定义")
-        self.load_model_btn.setObjectName("browseBtn")
-        self.load_model_btn.clicked.connect(self._load_custom_model)
-        yolo_btn_row.addWidget(self.load_model_btn)
-        self.train_btn_open = QPushButton("训练 YOLO")
-        self.train_btn_open.setObjectName("purpleBtn")
-        self.train_btn_open.setCursor(Qt.PointingHandCursor)
-        self.train_btn_open.clicked.connect(self._open_train_dialog)
-        yolo_btn_row.addWidget(self.train_btn_open)
-        yg.addLayout(yolo_btn_row)
-
-        yolo_form = QFormLayout()
-        self.conf_spin = QDoubleSpinBox()
-        self.conf_spin.setRange(0.05, 1.0)
-        self.conf_spin.setSingleStep(0.05)
-        self.conf_spin.setValue(0.50)
-        yolo_form.addRow("置信度", self.conf_spin)
-        self.imgsz_combo = QComboBox()
-        self.imgsz_combo.addItems(["320", "416", "512", "640", "960", "1280"])
-        self.imgsz_combo.setCurrentText("640")
-        yolo_form.addRow("分辨率", self.imgsz_combo)
-        yg.addLayout(yolo_form)
-
-        layout.addWidget(yolo_group)
-
-        layout.addStretch()
-        scroll.setWidget(tab)
-        self.train_tabs.addTab(scroll, "数据获取")
-
-    def _build_train_annotate_tab(self):
-        """训练 Tab 2: 标注"""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── LLM 自动标注 ──
-        anno_group = QGroupBox("LLM 自动标注")
-        anno_g = QVBoxLayout(anno_group)
-        anno_g.addWidget(QLabel("选择视频 → YOLO 检测目标 → LLM 判断动作 → 生成训练数据"))
-
-        anno_btn_row = QHBoxLayout()
-        self.auto_annotate_btn = QPushButton("开始 LLM 标注")
-        self.auto_annotate_btn.setObjectName("purpleBtn")
-        self.auto_annotate_btn.setCursor(Qt.PointingHandCursor)
-        self.auto_annotate_btn.clicked.connect(self._open_annotate_dialog)
-        anno_btn_row.addWidget(self.auto_annotate_btn)
-
-        self.view_annotation_btn = QPushButton("查看标注结果")
-        self.view_annotation_btn.setObjectName("infoBtn")
-        self.view_annotation_btn.setCursor(Qt.PointingHandCursor)
-        self.view_annotation_btn.clicked.connect(self._open_annotation_viewer)
-        anno_btn_row.addWidget(self.view_annotation_btn)
-        anno_g.addLayout(anno_btn_row)
-
-        layout.addWidget(anno_group)
-
-        # ── 人工录制 ──
-        rec_group = QGroupBox("人工操作录制")
-        rg = QVBoxLayout(rec_group)
-        rg.setSpacing(6)
-        rg.addWidget(QLabel("启动检测后录制键盘/鼠标操作，与 YOLO 检测结果一起保存"))
-
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("保存目录"))
-        self.rec_dir_input = QLineEdit("data/recordings")
-        dir_row.addWidget(self.rec_dir_input)
-        rec_browse = QPushButton("...")
-        rec_browse.setObjectName("browseBtn")
-        rec_browse.setMaximumWidth(32)
-        rec_browse.clicked.connect(lambda: self._browse_dir_to(self.rec_dir_input))
-        dir_row.addWidget(rec_browse)
-        rg.addLayout(dir_row)
-
-        session_row = QHBoxLayout()
-        session_row.addWidget(QLabel("会话名称"))
-        self.rec_session_input = QLineEdit()
-        self.rec_session_input.setPlaceholderText("留空自动生成时间戳")
-        session_row.addWidget(self.rec_session_input)
-        rg.addLayout(session_row)
-
-        rec_btn_row = QHBoxLayout()
-        self.rec_start_btn = QPushButton("●  开始录制")
-        self.rec_start_btn.setObjectName("stopBtn")
-        self.rec_start_btn.setCursor(Qt.PointingHandCursor)
-        self.rec_start_btn.setToolTip("需要先在 Agent 模式启动检测")
-        self.rec_start_btn.clicked.connect(self._toggle_recording)
-        rec_btn_row.addWidget(self.rec_start_btn)
-        rg.addLayout(rec_btn_row)
-
-        self.rec_status_label = QLabel("就绪（需先在 Agent 模式启动检测）")
-        self.rec_status_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 12px;")
-        rg.addWidget(self.rec_status_label)
-
-        layout.addWidget(rec_group)
-
-        layout.addStretch()
-        scroll.setWidget(tab)
-        self.train_tabs.addTab(scroll, "标注")
-
-    def _build_train_training_tab(self):
-        """训练 Tab 3: 模型训练"""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── 决策模型训练 ──
-        train_group = QGroupBox("决策模型训练")
-        tg = QVBoxLayout(train_group)
-        tg.setSpacing(6)
-
-        data_row = QHBoxLayout()
-        data_row.addWidget(QLabel("数据目录"))
-        self.dt_data_dir = QLineEdit("data/recordings")
-        data_row.addWidget(self.dt_data_dir)
-        dt_browse = QPushButton("...")
-        dt_browse.setObjectName("browseBtn")
-        dt_browse.setMaximumWidth(32)
-        dt_browse.clicked.connect(lambda: self._browse_dir_to(self.dt_data_dir))
-        data_row.addWidget(dt_browse)
-        tg.addLayout(data_row)
-
-        out_row = QHBoxLayout()
-        out_row.addWidget(QLabel("输出目录"))
-        self.dt_output_dir = QLineEdit("runs/decision/exp1")
-        out_row.addWidget(self.dt_output_dir)
-        tg.addLayout(out_row)
-
-        param_row = QHBoxLayout()
-        param_row.addWidget(QLabel("模型"))
-        self.dt_model_type = QComboBox()
-        self.dt_model_type.addItems(["mlp", "rf"])
-        param_row.addWidget(self.dt_model_type)
-        param_row.addWidget(QLabel("轮数"))
-        self.dt_epochs_spin = QSpinBox()
-        self.dt_epochs_spin.setRange(10, 1000)
-        self.dt_epochs_spin.setValue(100)
-        param_row.addWidget(self.dt_epochs_spin)
-        param_row.addWidget(QLabel("学习率"))
-        self.dt_lr_spin = QDoubleSpinBox()
-        self.dt_lr_spin.setRange(0.0001, 0.1)
-        self.dt_lr_spin.setSingleStep(0.0005)
-        self.dt_lr_spin.setDecimals(4)
-        self.dt_lr_spin.setValue(0.001)
-        param_row.addWidget(self.dt_lr_spin)
-        tg.addLayout(param_row)
-
-        dt_btn_row = QHBoxLayout()
-        self.dt_preview_btn = QPushButton("预览数据")
-        self.dt_preview_btn.setObjectName("infoBtn")
-        self.dt_preview_btn.setCursor(Qt.PointingHandCursor)
-        self.dt_preview_btn.clicked.connect(self._preview_data)
-        dt_btn_row.addWidget(self.dt_preview_btn)
-
-        self.dt_train_btn = QPushButton("▶  开始训练")
-        self.dt_train_btn.setObjectName("startBtn")
-        self.dt_train_btn.setCursor(Qt.PointingHandCursor)
-        self.dt_train_btn.clicked.connect(self._start_decision_train)
-        dt_btn_row.addWidget(self.dt_train_btn)
-
-        self.dt_use_btn = QPushButton("应用到 Agent")
-        self.dt_use_btn.setObjectName("purpleBtn")
-        self.dt_use_btn.setCursor(Qt.PointingHandCursor)
-        self.dt_use_btn.setToolTip("将训练好的模型设为 Agent 的决策引擎")
-        self.dt_use_btn.setEnabled(False)
-        self.dt_use_btn.clicked.connect(self._use_trained_model)
-        dt_btn_row.addWidget(self.dt_use_btn)
-        tg.addLayout(dt_btn_row)
-
-        self.dt_progress = QProgressBar()
-        self.dt_progress.setRange(0, 100)
-        self.dt_progress.setValue(0)
-        self.dt_progress.setVisible(False)
-        tg.addWidget(self.dt_progress)
-
-        self.dt_status_label = QLabel("")
-        self.dt_status_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 12px;")
-        tg.addWidget(self.dt_status_label)
-
-        from .train_chart import TrainChart
-        self.dt_chart = TrainChart()
-        self.dt_chart.setVisible(False)
-        tg.addWidget(self.dt_chart)
-
-        layout.addWidget(train_group)
-
-        layout.addStretch()
-        scroll.setWidget(tab)
-        self.train_tabs.addTab(scroll, "训练")
-
-    def _build_train_model_tab(self):
-        """训练 Tab 4: 模型管理"""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # ── Profile 管理 ──
-        profile_group = QGroupBox("场景 Profile 管理")
-        pg = QVBoxLayout(profile_group)
-
-        pg.addWidget(QLabel("Profile"))
-        self.profile_combo = QComboBox()
-        self.profile_combo.addItem("(无)")
-        self._refresh_profiles()
-        self.profile_combo.currentTextChanged.connect(self._on_profile_changed)
-        pg.addWidget(self.profile_combo)
-
-        self.profile_info = QTextEdit()
-        self.profile_info.setReadOnly(True)
-        self.profile_info.setMaximumHeight(120)
-        self.profile_info.setPlaceholderText("选择 Profile 查看详情")
-        pg.addWidget(self.profile_info)
-
-        profile_btn_row = QHBoxLayout()
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.setObjectName("browseBtn")
-        refresh_btn.setCursor(Qt.PointingHandCursor)
-        refresh_btn.clicked.connect(self._refresh_profiles)
-        profile_btn_row.addWidget(refresh_btn)
-
-        export_btn = QPushButton("导出配置")
-        export_btn.setObjectName("infoBtn")
-        export_btn.clicked.connect(self._export_config)
-        profile_btn_row.addWidget(export_btn)
-
-        import_btn = QPushButton("导入配置")
-        import_btn.setObjectName("browseBtn")
-        import_btn.clicked.connect(self._import_config)
-        profile_btn_row.addWidget(import_btn)
-        pg.addLayout(profile_btn_row)
-
-        layout.addWidget(profile_group)
-
-        layout.addStretch()
-        scroll.setWidget(tab)
-        self.train_tabs.addTab(scroll, "模型管理")
-
-    # ================================================================
-    #  Agent 模式 Tabs
-    # ================================================================
-
-    def _build_agent_source_tab(self):
-        """Agent Tab 1: 输入源"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        form = QFormLayout()
-        form.setSpacing(6)
-        self.source_type = QComboBox()
-        self.source_type.addItems(["screen", "camera", "video", "image", "stream"])
-        self.source_type.currentTextChanged.connect(self._on_source_type_changed)
-        form.addRow("类型", self.source_type)
-        layout.addLayout(form)
-
-        # 路径行
-        self.path_label = QLabel("路径")
-        layout.addWidget(self.path_label)
-        path_row = QHBoxLayout()
-        path_row.setSpacing(4)
-        self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText("文件路径 / rtsp:// / http://")
-        path_row.addWidget(self.path_input)
-        self.browse_btn = QPushButton("...")
-        self.browse_btn.setObjectName("browseBtn")
-        self.browse_btn.setMaximumWidth(32)
-        self.browse_btn.clicked.connect(self._browse_file)
-        path_row.addWidget(self.browse_btn)
-        layout.addLayout(path_row)
-
-        loop_row = QHBoxLayout()
-        loop_row.addWidget(QLabel("循环"))
-        self.loop_combo = QComboBox()
-        self.loop_combo.addItems(["否", "是"])
-        loop_row.addWidget(self.loop_combo)
-        layout.addLayout(loop_row)
-
-        # 摄像头
-        self.camera_label = QLabel("设备号")
-        layout.addWidget(self.camera_label)
-        self.camera_device = QSpinBox()
-        self.camera_device.setRange(0, 10)
-        layout.addWidget(self.camera_device)
-
-        # 屏幕
-        self.monitor_label = QLabel("显示器")
-        layout.addWidget(self.monitor_label)
-        self.monitor_num = QSpinBox()
-        self.monitor_num.setRange(1, 5)
-        layout.addWidget(self.monitor_num)
-
-        # 实时流
-        self.stream_label = QLabel("流地址")
-        layout.addWidget(self.stream_label)
-        self.stream_input = QLineEdit()
-        self.stream_input.setPlaceholderText(
-            "rtsp://user:pass@ip:554/stream  或  B站直播间号(如 12345)"
-        )
-        layout.addWidget(self.stream_input)
-        self.stream_hint = QLabel(
-            "支持: RTSP / HTTP-FLV / HLS(m3u8) / B站直播间号"
-        )
-        self.stream_hint.setStyleSheet("color: gray; font-size: 11px;")
-        layout.addWidget(self.stream_hint)
-
-        layout.addStretch()
-        self.agent_tabs.addTab(tab, "输入源")
+        # Agent 面板
+        ap.source_type.currentTextChanged.connect(self._on_source_type_changed)
+        ap.browse_btn.clicked.connect(self._browse_file)
+        ap.engine_combo.currentTextChanged.connect(self._on_engine_changed)
+        ap.trained_browse_btn.clicked.connect(self._browse_trained_dir)
+        ap.agent_profile_combo.currentTextChanged.connect(self._on_agent_profile_changed)
+        ap.profile_refresh_btn.clicked.connect(self._refresh_agent_profiles)
+        ap.currentChanged.connect(self._on_agent_tab_changed)
+        ap.chat_panel._try_auto_init = self._init_chat_provider
 
         # 初始化可见性
-        self.source_type.setCurrentText("video")
         self._on_source_type_changed("video")
 
-    def _build_agent_engine_tab(self):
-        """Agent Tab 2: 检测 + 决策"""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        # ── 决策引擎 ──
-        engine_group = QGroupBox("决策引擎")
-        eg = QVBoxLayout(engine_group)
-
-        form_top = QFormLayout()
-        form_top.setSpacing(6)
-        self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["none", "rule", "trained", "llm", "hierarchical", "rl"])
-        self.engine_combo.setCurrentText("rule")
-        self.engine_combo.currentTextChanged.connect(self._on_engine_changed)
-        form_top.addRow("引擎", self.engine_combo)
-        eg.addLayout(form_top)
-
-        # LLM 决策间隔
-        self.llm_interval_widget = QWidget()
-        interval_layout = QFormLayout(self.llm_interval_widget)
-        interval_layout.setContentsMargins(0, 0, 0, 0)
-        self.llm_interval = QDoubleSpinBox()
-        self.llm_interval.setRange(0.1, 30.0)
-        self.llm_interval.setSingleStep(0.5)
-        self.llm_interval.setValue(1.0)
-        interval_layout.addRow("决策间隔(秒)", self.llm_interval)
-        self.llm_interval_widget.setVisible(False)
-        eg.addWidget(self.llm_interval_widget)
-
-        layout.addWidget(engine_group)
-
-        # ── Trained 配置 ──
-        self.trained_config_widget = QGroupBox("训练模型配置")
-        trained_layout = QVBoxLayout(self.trained_config_widget)
-        trained_layout.setSpacing(6)
-
-        trained_dir_row = QHBoxLayout()
-        trained_dir_row.addWidget(QLabel("模型目录"))
-        self.trained_model_dir = QLineEdit()
-        self.trained_model_dir.setPlaceholderText("runs/decision/exp1")
-        self.trained_model_dir.setText("runs/decision/exp1")
-        trained_dir_row.addWidget(self.trained_model_dir)
-        trained_browse = QPushButton("...")
-        trained_browse.setObjectName("browseBtn")
-        trained_browse.setMaximumWidth(32)
-        trained_browse.clicked.connect(self._browse_trained_dir)
-        trained_dir_row.addWidget(trained_browse)
-        trained_layout.addLayout(trained_dir_row)
-
-        trained_form = QFormLayout()
-        self.trained_conf_spin = QDoubleSpinBox()
-        self.trained_conf_spin.setRange(0.05, 1.0)
-        self.trained_conf_spin.setSingleStep(0.05)
-        self.trained_conf_spin.setValue(0.30)
-        trained_form.addRow("置信阈值", self.trained_conf_spin)
-        trained_layout.addLayout(trained_form)
-
-        trained_layout.addWidget(QLabel("动作映射 (语义名→按键):"))
-        self.trained_action_map_edit = QTextEdit()
-        self.trained_action_map_edit.setMaximumHeight(100)
-        self.trained_action_map_edit.setPlaceholderText(
-            '{\n  "attack": {"type": "key", "key": "a"},\n'
-            '  "retreat": {"type": "key", "key": "s"}\n}'
-        )
-        default_map = {
-            "attack": {"type": "key", "key": "a"},
-            "retreat": {"type": "key", "key": "s"},
-            "skill_1": {"type": "key", "key": "1"},
-            "skill_2": {"type": "key", "key": "2"},
-            "skill_3": {"type": "key", "key": "3"},
-        }
-        self.trained_action_map_edit.setPlainText(json.dumps(default_map, indent=2, ensure_ascii=False))
-        trained_layout.addWidget(self.trained_action_map_edit)
-
-        self.trained_config_widget.setVisible(False)
-        layout.addWidget(self.trained_config_widget)
-
-        # ── LLM 配置区域（Agent 模式独立，与训练模式的 LLM 配置分开展示但共享数据） ──
-        self.llm_config_widget = QGroupBox("LLM 决策配置")
-        self.llm_config_widget.setVisible(False)
-        llm_hint = QVBoxLayout(self.llm_config_widget)
-        llm_hint.addWidget(QLabel("使用训练工坊中配置的 LLM 供应商和模型"))
-        layout.addWidget(self.llm_config_widget)
-
-        layout.addStretch()
-        scroll.setWidget(tab)
-        self.agent_tabs.addTab(scroll, "检测决策")
-
-    def _build_agent_scene_tab(self):
-        """Agent Tab 3: 场景"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        # Profile 快速选择
-        layout.addWidget(QLabel("场景 Profile（训练工坊中管理）"))
-        self.agent_profile_combo = QComboBox()
-        self.agent_profile_combo.addItem("(无)")
-        self._refresh_agent_profiles()
-        self.agent_profile_combo.currentTextChanged.connect(self._on_agent_profile_changed)
-        layout.addWidget(self.agent_profile_combo)
-
-        refresh_btn = QPushButton("刷新")
-        refresh_btn.setObjectName("browseBtn")
-        refresh_btn.setCursor(Qt.PointingHandCursor)
-        refresh_btn.clicked.connect(self._refresh_agent_profiles)
-        layout.addWidget(refresh_btn)
-
-        # AutoPilot
-        self.autopilot_check = QCheckBox("启用 AutoPilot（自动场景识别 + 自动切换）")
-        self.autopilot_check.setToolTip(
-            "开启后自动根据检测结果识别场景，\n"
-            "切换到对应 Profile 并使用其决策模型"
-        )
-        layout.addWidget(self.autopilot_check)
-
-        # 场景状态
-        scene_group = QGroupBox("当前场景状态")
-        sg = QVBoxLayout(scene_group)
-        self.scene_status_text = QTextEdit()
-        self.scene_status_text.setReadOnly(True)
-        self.scene_status_text.setMaximumHeight(100)
-        self.scene_status_text.setPlaceholderText("启动检测后显示场景信息")
-        sg.addWidget(self.scene_status_text)
-        layout.addWidget(scene_group)
-
-        layout.addStretch()
-        self.agent_tabs.addTab(tab, "场景")
-
-    def _build_agent_chat_tab(self):
-        """Agent Tab 4: LLM 对话控制"""
-        self.chat_panel = ChatPanel()
-        self.chat_panel._try_auto_init = self._init_chat_provider
-        self.agent_tabs.addTab(self.chat_panel, "对话控制")
-        self.agent_tabs.currentChanged.connect(self._on_agent_tab_changed)
-
-    def _on_agent_tab_changed(self, index: int):
-        """切换到对话控制 tab 时自动初始化 LLM。"""
-        tab_text = self.agent_tabs.tabText(index)
-        if tab_text == "对话控制" and self.chat_panel._provider is None:
-            self._init_chat_provider()
-
-    def _init_chat_provider(self):
-        """根据当前 LLM 配置初始化对话面板的 Provider 和工具。"""
-        api_key = self._get_llm_api_key()
-        provider_name = self.llm_provider_combo.currentText()
-        model = self.llm_model_combo.currentText()
-        base_url = self.llm_base_url.text().strip()
-
-        if not api_key and provider_name != "ollama":
-            self.chat_panel.set_provider(None)
-            return False
-
-        try:
-            provider = create_provider(provider_name, api_key or "ollama", model, base_url)
-            self.chat_panel.set_provider(provider)
-        except Exception as e:
-            self._log(f"[对话] 创建 LLM Provider 失败: {e}")
-            self.chat_panel.set_provider(None)
-            return False
-
-        # 工具注册（对话面板始终注册真实工具，由面板自身 dryrun 控制是否执行）
-        registry = ToolRegistry()
-        try:
-            registry.register(KeyboardTool())
-            registry.register(MouseTool())
-        except ImportError:
-            self._log("[对话] pynput 未安装，键盘鼠标工具不可用")
-            return False
-
-        self.chat_panel.set_tool_registry(registry)
-        self._log(f"[对话] LLM 已就绪: {provider_name}/{model}")
-        return True
+        # 初始化 profiles
+        self._refresh_profiles()
 
     # ================================================================
     #  模式切换
@@ -824,7 +288,6 @@ class MainWindow(QMainWindow):
         self.mode_stack.setCurrentIndex(0 if is_train else 1)
         self.agent_controls.setVisible(not is_train)
 
-        # 更新按钮样式
         self.mode_train_btn.setObjectName("modeBtnActive" if is_train else "modeBtnInactive")
         self.mode_agent_btn.setObjectName("modeBtnInactive" if is_train else "modeBtnActive")
         self.mode_train_btn.setStyle(self.mode_train_btn.style())
@@ -835,40 +298,38 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _refresh_profiles(self):
-        current = self.profile_combo.currentText() if hasattr(self, 'profile_combo') else ""
-        self.profile_combo.clear()
-        self.profile_combo.addItem("(无)", "")
+        combo = self.train_panel.profile_combo
+        current = combo.currentText()
+        combo.clear()
+        combo.addItem("(无)", "")
         profiles = self._profile_mgr.load_all()
         for name, p in profiles.items():
-            self.profile_combo.addItem(f"{p.display_name} ({name})", name)
+            combo.addItem(f"{p.display_name} ({name})", name)
         if current:
-            idx = self.profile_combo.findText(current)
+            idx = combo.findText(current)
             if idx >= 0:
-                self.profile_combo.setCurrentIndex(idx)
-        # 同步刷新 Agent 模式的 profile 列表
-        if hasattr(self, 'agent_profile_combo'):
-            self._refresh_agent_profiles()
+                combo.setCurrentIndex(idx)
+        self._refresh_agent_profiles()
 
     def _refresh_agent_profiles(self):
-        if not hasattr(self, 'agent_profile_combo'):
-            return
-        current = self.agent_profile_combo.currentText()
-        self.agent_profile_combo.clear()
-        self.agent_profile_combo.addItem("(无)", "")
+        combo = self.agent_panel.agent_profile_combo
+        current = combo.currentText()
+        combo.clear()
+        combo.addItem("(无)", "")
         profiles = self._profile_mgr.load_all()
         for name, p in profiles.items():
-            self.agent_profile_combo.addItem(f"{p.display_name} ({name})", name)
+            combo.addItem(f"{p.display_name} ({name})", name)
         if current:
-            idx = self.agent_profile_combo.findText(current)
+            idx = combo.findText(current)
             if idx >= 0:
-                self.agent_profile_combo.setCurrentIndex(idx)
+                combo.setCurrentIndex(idx)
 
     @Slot(str)
     def _on_profile_changed(self, text: str):
         if not text or text == "(无)":
-            self.profile_info.clear()
+            self.train_panel.profile_info.clear()
             return
-        name = self.profile_combo.currentData() or ""
+        name = self.train_panel.profile_combo.currentData() or ""
         profile = self._profile_mgr.get(name) if name else None
         if not profile:
             return
@@ -881,27 +342,27 @@ class MainWindow(QMainWindow):
             f"ROI 区域: {', '.join(profile.roi_regions.keys())}",
             f"自动训练: {'启用' if profile.auto_train.get('enabled') else '禁用'}",
         ]
-        self.profile_info.setPlainText("\n".join(info_lines))
+        self.train_panel.profile_info.setPlainText("\n".join(info_lines))
 
     @Slot(str)
     def _on_agent_profile_changed(self, text: str):
-        """Agent 模式选择 Profile，自动填充相关配置。"""
         if not text or text == "(无)":
             return
-        name = self.agent_profile_combo.currentData() or ""
+        name = self.agent_panel.agent_profile_combo.currentData() or ""
         profile = self._profile_mgr.get(name) if name else None
         if not profile:
             return
+        ap = self.agent_panel
         if profile.yolo_model:
-            self.model_combo.setEditText(profile.yolo_model)
+            self.train_panel.model_combo.setEditText(profile.yolo_model)
         if profile.decision_engine and profile.decision_engine != "rule":
-            self.engine_combo.setCurrentText(profile.decision_engine)
+            ap.engine_combo.setCurrentText(profile.decision_engine)
         if profile.action_key_map:
-            self.trained_action_map_edit.setPlainText(
+            ap.trained_action_map_edit.setPlainText(
                 json.dumps(profile.action_key_map, indent=2, ensure_ascii=False)
             )
         if profile.decision_model_dir:
-            self.trained_model_dir.setText(profile.decision_model_dir)
+            ap.trained_model_dir.setText(profile.decision_model_dir)
 
     # ================================================================
     #  训练模式事件
@@ -917,13 +378,14 @@ class MainWindow(QMainWindow):
     @Slot()
     def _open_annotate_dialog(self):
         from .annotate_dialog import AnnotateDialog
-        default_video = self.path_input.text().strip() if self.source_type.currentText() == "video" else ""
-        default_model = self.model_combo.currentText()
+        ap = self.agent_panel
+        default_video = ap.path_input.text().strip() if ap.source_type.currentText() == "video" else ""
+        default_model = self.train_panel.model_combo.currentText()
         dialog = AnnotateDialog(self, default_video=default_video, default_model=default_model)
         dialog.exec()
         save_path = dialog.get_save_path()
         if save_path:
-            self.dt_data_dir.setText(str(Path(save_path).parent))
+            self.train_panel.dt_data_dir.setText(str(Path(save_path).parent))
             self._log(f"[标注] 数据已保存到 {save_path}")
 
     @Slot()
@@ -931,13 +393,13 @@ class MainWindow(QMainWindow):
         from .annotation_viewer import AnnotationViewer
         jsonl_path = ""
         video_path = ""
-        data_dir = self.dt_data_dir.text().strip() if hasattr(self, 'dt_data_dir') else ""
+        data_dir = self.train_panel.dt_data_dir.text().strip()
         if data_dir and Path(data_dir).is_dir():
             jsonl_files = sorted(Path(data_dir).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
             if jsonl_files:
                 jsonl_path = str(jsonl_files[0])
-        if self.source_type.currentText() == "video":
-            video_path = self.path_input.text().strip()
+        if self.agent_panel.source_type.currentText() == "video":
+            video_path = self.agent_panel.path_input.text().strip()
         dialog = AnnotationViewer(self, jsonl_path=jsonl_path, video_path=video_path)
         dialog.exec()
 
@@ -949,7 +411,7 @@ class MainWindow(QMainWindow):
     def _browse_trained_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择模型目录")
         if path:
-            self.trained_model_dir.setText(path)
+            self.agent_panel.trained_model_dir.setText(path)
 
     @Slot()
     def _toggle_recording(self):
@@ -962,15 +424,16 @@ class MainWindow(QMainWindow):
         if not self._worker:
             QMessageBox.warning(self, "提示", "请先在 Agent 模式启动检测，再开始录制")
             return
-        save_dir = self.rec_dir_input.text().strip() or "data/recordings"
-        session = self.rec_session_input.text().strip() or None
+        tp = self.train_panel
+        save_dir = tp.rec_dir_input.text().strip() or "data/recordings"
+        session = tp.rec_session_input.text().strip() or None
         try:
             self._recorder = DataRecorder(save_dir=save_dir, session_name=session)
             self._recorder.on_start()
             self._worker.agents.append(self._recorder)
-            self.rec_start_btn.setText("■  停止录制")
-            self.rec_status_label.setText(f"● 录制中... → {self._recorder.file_path}")
-            self.rec_status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px; font-weight: bold;")
+            tp.rec_start_btn.setText("■  停止录制")
+            tp.rec_status_label.setText(f"● 录制中... → {self._recorder.file_path}")
+            tp.rec_status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px; font-weight: bold;")
             self._log(f"[录制] 开始 → {self._recorder.file_path}")
             from PySide6.QtCore import QTimer
             self._rec_timer = QTimer(self)
@@ -982,6 +445,7 @@ class MainWindow(QMainWindow):
     def _stop_recording(self):
         if not self._recorder:
             return
+        tp = self.train_panel
         if hasattr(self, '_rec_timer'):
             self._rec_timer.stop()
         if self._worker and self._recorder in self._worker.agents:
@@ -989,24 +453,24 @@ class MainWindow(QMainWindow):
         count = self._recorder.sample_count
         path = self._recorder.file_path
         self._recorder.on_stop()
-        self.rec_start_btn.setText("●  开始录制")
-        self.rec_status_label.setText(f"录制完成: {count} 条样本 → {path}")
-        self.rec_status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px;")
+        tp.rec_start_btn.setText("●  开始录制")
+        tp.rec_status_label.setText(f"录制完成: {count} 条样本 → {path}")
+        tp.rec_status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px;")
         self._log(f"[录制] 停止, {count} 条样本已保存")
         if path:
-            self.dt_data_dir.setText(str(path.parent))
+            tp.dt_data_dir.setText(str(path.parent))
         self._recorder = None
 
     @Slot()
     def _update_rec_status(self):
         if self._recorder and self._recorder.is_recording:
-            self.rec_status_label.setText(
+            self.train_panel.rec_status_label.setText(
                 f"录制中... {self._recorder.sample_count} 条样本 → {self._recorder.file_path}"
             )
 
     @Slot()
     def _preview_data(self):
-        data_dir = self.dt_data_dir.text().strip()
+        data_dir = self.train_panel.dt_data_dir.text().strip()
         if not data_dir:
             QMessageBox.warning(self, "提示", "请指定数据目录")
             return
@@ -1057,22 +521,23 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _start_decision_train(self):
-        data_dir = self.dt_data_dir.text().strip()
-        output_dir = self.dt_output_dir.text().strip()
+        tp = self.train_panel
+        data_dir = tp.dt_data_dir.text().strip()
+        output_dir = tp.dt_output_dir.text().strip()
         if not data_dir:
             QMessageBox.warning(self, "提示", "请指定数据目录")
             return
-        self.dt_train_btn.setEnabled(False)
-        self.dt_use_btn.setEnabled(False)
-        self.dt_progress.setVisible(True)
-        self.dt_progress.setValue(0)
-        self.dt_chart.clear()
-        self.dt_chart.setVisible(True)
-        self.dt_status_label.setText("准备中...")
-        model_type = self.dt_model_type.currentText()
+        tp.dt_train_btn.setEnabled(False)
+        tp.dt_use_btn.setEnabled(False)
+        tp.dt_progress.setVisible(True)
+        tp.dt_progress.setValue(0)
+        tp.dt_chart.clear()
+        tp.dt_chart.setVisible(True)
+        tp.dt_status_label.setText("准备中...")
+        model_type = tp.dt_model_type.currentText()
         self._train_worker = DecisionTrainWorker(
             data_dir=data_dir, output_dir=output_dir, model_type=model_type,
-            epochs=self.dt_epochs_spin.value(), lr=self.dt_lr_spin.value(),
+            epochs=tp.dt_epochs_spin.value(), lr=tp.dt_lr_spin.value(),
         )
         self._train_worker.log_message.connect(self._on_dt_log)
         self._train_worker.progress.connect(self._on_dt_progress)
@@ -1087,44 +552,47 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int, float, float, float)
     def _on_dt_progress(self, epoch, total, loss, train_acc, val_acc):
+        tp = self.train_panel
         pct = int(epoch / total * 100) if total > 0 else 0
-        self.dt_progress.setValue(pct)
-        self.dt_status_label.setText(
+        tp.dt_progress.setValue(pct)
+        tp.dt_status_label.setText(
             f"Epoch {epoch}/{total}  loss={loss:.4f}  "
             f"train={train_acc:.3f}  val={val_acc:.3f}"
         )
-        self.dt_chart.add_point(loss, train_acc, val_acc)
+        tp.dt_chart.add_point(loss, train_acc, val_acc)
 
     @Slot(str, dict)
     def _on_dt_finished(self, model_dir, metrics):
-        self.dt_train_btn.setEnabled(True)
-        self.dt_use_btn.setEnabled(True)
-        self.dt_progress.setValue(100)
+        tp = self.train_panel
+        tp.dt_train_btn.setEnabled(True)
+        tp.dt_use_btn.setEnabled(True)
+        tp.dt_progress.setValue(100)
         val_acc = metrics.get("best_val_acc", 0)
         train_acc = metrics.get("final_train_acc", 0)
         epochs = metrics.get("epochs_trained", "?")
-        self.dt_status_label.setText(
+        tp.dt_status_label.setText(
             f"训练完成  val={val_acc:.3f}  train={train_acc:.3f}  ({epochs} epochs)"
         )
-        self.dt_status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px; font-weight: bold;")
+        tp.dt_status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px; font-weight: bold;")
         self._log(f"[训练] 完成 → {model_dir} (val_acc={val_acc:.4f})")
         self._train_worker = None
 
     @Slot(str)
     def _on_dt_error(self, error):
-        self.dt_train_btn.setEnabled(True)
-        self.dt_progress.setVisible(False)
-        self.dt_status_label.setText(f"训练失败: {error}")
-        self.dt_status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px;")
+        tp = self.train_panel
+        tp.dt_train_btn.setEnabled(True)
+        tp.dt_progress.setVisible(False)
+        tp.dt_status_label.setText(f"训练失败: {error}")
+        tp.dt_status_label.setStyleSheet(f"color: {COLORS['danger']}; font-size: 12px;")
         QMessageBox.critical(self, "训练失败", error)
         self._train_worker = None
 
     @Slot()
     def _use_trained_model(self):
-        model_dir = self.dt_output_dir.text().strip()
+        model_dir = self.train_panel.dt_output_dir.text().strip()
         self._switch_mode("agent")
-        self.engine_combo.setCurrentText("trained")
-        self.trained_model_dir.setText(model_dir)
+        self.agent_panel.engine_combo.setCurrentText("trained")
+        self.agent_panel.trained_model_dir.setText(model_dir)
         self._log(f"[引擎] 已切换到 Agent 模式 - trained: {model_dir}")
         QMessageBox.information(
             self, "已应用",
@@ -1186,29 +654,7 @@ class MainWindow(QMainWindow):
     # ================================================================
 
     def _on_source_type_changed(self, source_type: str):
-        is_video = source_type == "video"
-        is_camera = source_type == "camera"
-        is_screen = source_type == "screen"
-        is_image = source_type == "image"
-        is_stream = source_type == "stream"
-
-        self.path_label.setVisible(is_video or is_image)
-        self.path_input.setVisible(is_video or is_image)
-        self.browse_btn.setVisible(is_video or is_image)
-        self.loop_combo.setVisible(is_video or is_image)
-
-        if is_image:
-            self.path_label.setText("图片路径 / 目录")
-        else:
-            self.path_label.setText("路径 / 流地址")
-
-        self.camera_label.setVisible(is_camera)
-        self.camera_device.setVisible(is_camera)
-        self.monitor_label.setVisible(is_screen)
-        self.monitor_num.setVisible(is_screen)
-        self.stream_label.setVisible(is_stream)
-        self.stream_input.setVisible(is_stream)
-        self.stream_hint.setVisible(is_stream)
+        self.agent_panel.update_source_visibility(source_type)
 
     def _browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1216,27 +662,28 @@ class MainWindow(QMainWindow):
             "视频/图片 (*.mp4 *.avi *.mkv *.mov *.flv *.wmv *.jpg *.png *.bmp);;所有文件 (*)"
         )
         if path:
-            self.path_input.setText(path)
+            self.agent_panel.path_input.setText(path)
 
     def _build_source_config(self) -> dict:
-        source_type = self.source_type.currentText()
+        ap = self.agent_panel
+        source_type = ap.source_type.currentText()
         config = {"type": source_type}
         if source_type == "video":
             config["video"] = {
-                "path": self.path_input.text().strip(),
-                "loop": self.loop_combo.currentIndex() == 1,
+                "path": ap.path_input.text().strip(),
+                "loop": ap.loop_combo.currentIndex() == 1,
             }
         elif source_type == "camera":
-            config["camera"] = {"device": self.camera_device.value()}
+            config["camera"] = {"device": ap.camera_device.value()}
         elif source_type == "screen":
-            config["screen"] = {"monitor": self.monitor_num.value()}
+            config["screen"] = {"monitor": ap.monitor_num.value()}
         elif source_type == "image":
             config["image"] = {
-                "path": self.path_input.text().strip(),
-                "loop": self.loop_combo.currentIndex() == 1,
+                "path": ap.path_input.text().strip(),
+                "loop": ap.loop_combo.currentIndex() == 1,
             }
         elif source_type == "stream":
-            raw = self.stream_input.text().strip()
+            raw = ap.stream_input.text().strip()
             if raw.isdigit():
                 url = f"bilibili://{raw}"
             else:
@@ -1246,33 +693,33 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_engine_changed(self, engine_type: str):
-        self.trained_config_widget.setVisible(engine_type == "trained")
-        self.llm_config_widget.setVisible(engine_type == "llm")
-        self.llm_interval_widget.setVisible(engine_type == "llm")
+        self.agent_panel.update_engine_visibility(engine_type)
 
     @Slot(str)
     def _on_provider_changed(self, provider_name: str):
+        tp = self.train_panel
         preset = PROVIDER_PRESETS.get(provider_name, {})
-        self.llm_model_combo.clear()
-        self.llm_model_combo.addItems(preset.get("models", []))
-        self.llm_base_url.setText(preset.get("base_url", ""))
+        tp.llm_model_combo.clear()
+        tp.llm_model_combo.addItems(preset.get("models", []))
+        tp.llm_base_url.setText(preset.get("base_url", ""))
         env_key = preset.get("api_key_env", "")
         if env_key and os.environ.get(env_key):
-            self.llm_api_key.setPlaceholderText(f"已从 {env_key} 读取")
+            tp.llm_api_key.setPlaceholderText(f"已从 {env_key} 读取")
         else:
-            self.llm_api_key.setPlaceholderText(f"API Key" + (f" 或设置 {env_key}" if env_key else ""))
+            tp.llm_api_key.setPlaceholderText(f"API Key" + (f" 或设置 {env_key}" if env_key else ""))
 
     @Slot()
     def _test_llm_connection(self):
-        provider_name = self.llm_provider_combo.currentText()
+        tp = self.train_panel
+        provider_name = tp.llm_provider_combo.currentText()
         api_key = self._get_llm_api_key()
-        model = self.llm_model_combo.currentText()
-        base_url = self.llm_base_url.text().strip()
+        model = tp.llm_model_combo.currentText()
+        base_url = tp.llm_base_url.text().strip()
         if not api_key and provider_name != "ollama":
             QMessageBox.warning(self, "提示", "请输入 API Key")
             return
-        self.llm_test_btn.setEnabled(False)
-        self.llm_test_btn.setText("测试中...")
+        tp.llm_test_btn.setEnabled(False)
+        tp.llm_test_btn.setText("测试中...")
         try:
             provider = create_provider(provider_name, api_key or "ollama", model, base_url)
             ok = provider.test_connection()
@@ -1287,23 +734,61 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"连接失败:\n{e}")
         finally:
-            self.llm_test_btn.setEnabled(True)
-            self.llm_test_btn.setText("测试连接")
+            tp.llm_test_btn.setEnabled(True)
+            tp.llm_test_btn.setText("测试连接")
 
     def _get_llm_api_key(self) -> str:
-        key = self.llm_api_key.text().strip()
+        tp = self.train_panel
+        key = tp.llm_api_key.text().strip()
         if key:
             return key
-        provider_name = self.llm_provider_combo.currentText()
+        provider_name = tp.llm_provider_combo.currentText()
         env_key = PROVIDER_PRESETS.get(provider_name, {}).get("api_key_env", "")
         return os.environ.get(env_key, "") if env_key else ""
+
+    def _on_agent_tab_changed(self, index: int):
+        tab_text = self.agent_panel.tabText(index)
+        if tab_text == "对话控制" and self.agent_panel.chat_panel._provider is None:
+            self._init_chat_provider()
+
+    def _init_chat_provider(self):
+        tp = self.train_panel
+        api_key = self._get_llm_api_key()
+        provider_name = tp.llm_provider_combo.currentText()
+        model = tp.llm_model_combo.currentText()
+        base_url = tp.llm_base_url.text().strip()
+
+        if not api_key and provider_name != "ollama":
+            self.agent_panel.chat_panel.set_provider(None)
+            return False
+
+        try:
+            provider = create_provider(provider_name, api_key or "ollama", model, base_url)
+            self.agent_panel.chat_panel.set_provider(provider)
+        except Exception as e:
+            self._log(f"[对话] 创建 LLM Provider 失败: {e}")
+            self.agent_panel.chat_panel.set_provider(None)
+            return False
+
+        registry = ToolRegistry()
+        try:
+            registry.register(KeyboardTool())
+            registry.register(MouseTool())
+        except ImportError:
+            self._log("[对话] pynput 未安装，键盘鼠标工具不可用")
+            return False
+
+        self.agent_panel.chat_panel.set_tool_registry(registry)
+        self._log(f"[对话] LLM 已就绪: {provider_name}/{model}")
+        return True
 
     # ================================================================
     #  Agent 构建
     # ================================================================
 
     def _build_agents(self) -> list:
-        engine_type = self.engine_combo.currentText()
+        ap = self.agent_panel
+        engine_type = ap.engine_combo.currentText()
         if engine_type == "none":
             return []
 
@@ -1342,9 +827,9 @@ class MainWindow(QMainWindow):
                 )
             engine.add_rule("attack_on_detect", _rule_attack_on_detect)
         elif engine_type == "trained":
-            model_dir = self.trained_model_dir.text().strip() or "runs/decision/exp1"
+            model_dir = ap.trained_model_dir.text().strip() or "runs/decision/exp1"
             action_key_map = {}
-            map_text = self.trained_action_map_edit.toPlainText().strip()
+            map_text = ap.trained_action_map_edit.toPlainText().strip()
             if map_text:
                 try:
                     action_key_map = json.loads(map_text)
@@ -1353,7 +838,7 @@ class MainWindow(QMainWindow):
             try:
                 engine = TrainedEngine(
                     model_dir=model_dir,
-                    confidence_threshold=self.trained_conf_spin.value(),
+                    confidence_threshold=ap.trained_conf_spin.value(),
                     action_key_map=action_key_map,
                 )
                 self._log(f"Trained 引擎: {model_dir}")
@@ -1364,9 +849,9 @@ class MainWindow(QMainWindow):
                 return []
         elif engine_type == "llm":
             api_key = self._get_llm_api_key()
-            provider_name = self.llm_provider_combo.currentText()
-            model = self.llm_model_combo.currentText()
-            base_url = self.llm_base_url.text().strip()
+            provider_name = self.train_panel.llm_provider_combo.currentText()
+            model = self.train_panel.llm_model_combo.currentText()
+            base_url = self.train_panel.llm_base_url.text().strip()
             if not api_key and provider_name != "ollama":
                 self._log("[警告] API Key 未设置，LLM 引擎不可用")
                 return []
@@ -1379,12 +864,12 @@ class MainWindow(QMainWindow):
                 provider=provider,
                 tools_schema=registry.to_claude_tools(),
                 system_prompt="你是一个视觉AI助手，根据画面检测结果决定下一步动作。只在需要时才调用工具。",
-                decision_interval=self.llm_interval.value(),
+                decision_interval=ap.llm_interval.value(),
             )
             engine.set_log_callback(self._decision_log_callback)
             self._log(f"LLM 引擎: {provider_name}/{model}")
         elif engine_type == "hierarchical":
-            name = self.agent_profile_combo.currentData() if hasattr(self, 'agent_profile_combo') else ""
+            name = ap.agent_profile_combo.currentData() or ""
             profile = self._profile_mgr.get(name) if name else None
             micro = RuleEngine()
             if profile and profile.actions:
@@ -1418,7 +903,7 @@ class MainWindow(QMainWindow):
         elif engine_type == "rl":
             actions = ["idle", "attack", "retreat"]
             action_key_map = {}
-            name = self.agent_profile_combo.currentData() if hasattr(self, 'agent_profile_combo') else ""
+            name = ap.agent_profile_combo.currentData() or ""
             profile = self._profile_mgr.get(name) if name else None
             if profile:
                 actions = profile.actions or actions
@@ -1465,9 +950,9 @@ class MainWindow(QMainWindow):
             return
         try:
             detector = Detector(
-                model=self.model_combo.currentText(),
-                confidence=self.conf_spin.value(),
-                imgsz=int(self.imgsz_combo.currentText()),
+                model=self.train_panel.model_combo.currentText(),
+                confidence=self.train_panel.conf_spin.value(),
+                imgsz=int(self.train_panel.imgsz_combo.currentText()),
             )
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载检测模型失败:\n{e}")
@@ -1483,7 +968,7 @@ class MainWindow(QMainWindow):
         self.decision_log_text.clear()
 
         self._auto_pilot = None
-        if hasattr(self, 'autopilot_check') and self.autopilot_check.isChecked():
+        if self.agent_panel.autopilot_check.isChecked():
             try:
                 self._auto_pilot = AutoPilot(
                     profile_manager=self._profile_mgr,
@@ -1531,8 +1016,7 @@ class MainWindow(QMainWindow):
                         action.reason, target_bbox=action.target_bbox,
                     )
         self.video_widget.update_frame(frame, result)
-        if hasattr(self, 'chat_panel'):
-            self.chat_panel.update_frame(frame)
+        self.agent_panel.chat_panel.update_frame(frame)
         self.count_label.setText(
             f"检测: {len(result.detections)}  |  帧: {self._frame_count}"
         )
@@ -1540,12 +1024,11 @@ class MainWindow(QMainWindow):
             scene = self._auto_pilot.current_scene
             self.scene_label.setText(f"场景: {scene}")
             engines = self._auto_pilot.available_engines
-            if hasattr(self, 'scene_status_text'):
-                self.scene_status_text.setPlainText(
-                    f"当前场景: {scene}\n"
-                    f"已加载引擎: {', '.join(engines) if engines else '无'}\n"
-                    f"帧缓冲: {self._auto_pilot.buffer_size}"
-                )
+            self.agent_panel.scene_status_text.setPlainText(
+                f"当前场景: {scene}\n"
+                f"已加载引擎: {', '.join(engines) if engines else '无'}\n"
+                f"帧缓冲: {self._auto_pilot.buffer_size}"
+            )
         if self._frame_count % 30 == 1 and result.detections:
             names = [f"{d.class_name}({d.confidence:.2f})" for d in result.detections[:5]]
             self._log(f"[F{self._frame_count}] {', '.join(names)}")
@@ -1599,11 +1082,12 @@ class MainWindow(QMainWindow):
 
     def _scan_models(self):
         import glob
-        existing = [self.model_combo.itemText(i) for i in range(self.model_combo.count())]
+        combo = self.train_panel.model_combo
+        existing = [combo.itemText(i) for i in range(combo.count())]
         for best in glob.glob("runs/**/best.pt", recursive=True):
             best = best.replace("\\", "/")
             if best not in existing:
-                self.model_combo.addItem(f"{best}")
+                combo.addItem(f"{best}")
                 existing.append(best)
 
     @Slot()
@@ -1613,7 +1097,7 @@ class MainWindow(QMainWindow):
             "PyTorch 模型 (*.pt);;ONNX 模型 (*.onnx);;所有文件 (*)"
         )
         if path:
-            self.model_combo.setEditText(path)
+            self.train_panel.model_combo.setEditText(path)
             self._log(f"已加载: {path}")
 
     @Slot()
@@ -1623,7 +1107,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             model_path = dialog.get_model_path()
             if model_path:
-                self.model_combo.setEditText(model_path)
+                self.train_panel.model_combo.setEditText(model_path)
                 self._log(f"训练模型: {model_path}")
 
     # ================================================================
@@ -1632,81 +1116,85 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self):
         s = self._settings
+        tp = self.train_panel
+        ap = self.agent_panel
         s.setValue("app/mode", self._current_mode)
-        s.setValue("source/type", self.source_type.currentText())
-        s.setValue("source/path", self.path_input.text())
-        s.setValue("source/loop", self.loop_combo.currentIndex())
-        s.setValue("source/camera", self.camera_device.value())
-        s.setValue("source/monitor", self.monitor_num.value())
-        s.setValue("source/stream_url", self.stream_input.text())
-        s.setValue("detector/model", self.model_combo.currentText())
-        s.setValue("detector/confidence", self.conf_spin.value())
-        s.setValue("detector/imgsz", self.imgsz_combo.currentText())
-        s.setValue("decision/engine", self.engine_combo.currentText())
-        s.setValue("decision/trained_dir", self.trained_model_dir.text())
-        s.setValue("decision/trained_conf", self.trained_conf_spin.value())
-        s.setValue("decision/trained_action_map", self.trained_action_map_edit.toPlainText())
-        s.setValue("recorder/dir", self.rec_dir_input.text())
-        s.setValue("train/data_dir", self.dt_data_dir.text())
-        s.setValue("train/output_dir", self.dt_output_dir.text())
-        s.setValue("train/model_type", self.dt_model_type.currentText())
-        s.setValue("train/epochs", self.dt_epochs_spin.value())
-        s.setValue("train/lr", self.dt_lr_spin.value())
-        s.setValue("decision/provider", self.llm_provider_combo.currentText())
-        s.setValue("decision/model", self.llm_model_combo.currentText())
-        s.setValue("decision/base_url", self.llm_base_url.text())
-        s.setValue("decision/interval", self.llm_interval.value())
+        s.setValue("source/type", ap.source_type.currentText())
+        s.setValue("source/path", ap.path_input.text())
+        s.setValue("source/loop", ap.loop_combo.currentIndex())
+        s.setValue("source/camera", ap.camera_device.value())
+        s.setValue("source/monitor", ap.monitor_num.value())
+        s.setValue("source/stream_url", ap.stream_input.text())
+        s.setValue("detector/model", tp.model_combo.currentText())
+        s.setValue("detector/confidence", tp.conf_spin.value())
+        s.setValue("detector/imgsz", tp.imgsz_combo.currentText())
+        s.setValue("decision/engine", ap.engine_combo.currentText())
+        s.setValue("decision/trained_dir", ap.trained_model_dir.text())
+        s.setValue("decision/trained_conf", ap.trained_conf_spin.value())
+        s.setValue("decision/trained_action_map", ap.trained_action_map_edit.toPlainText())
+        s.setValue("recorder/dir", tp.rec_dir_input.text())
+        s.setValue("train/data_dir", tp.dt_data_dir.text())
+        s.setValue("train/output_dir", tp.dt_output_dir.text())
+        s.setValue("train/model_type", tp.dt_model_type.currentText())
+        s.setValue("train/epochs", tp.dt_epochs_spin.value())
+        s.setValue("train/lr", tp.dt_lr_spin.value())
+        s.setValue("decision/provider", tp.llm_provider_combo.currentText())
+        s.setValue("decision/model", tp.llm_model_combo.currentText())
+        s.setValue("decision/base_url", tp.llm_base_url.text())
+        s.setValue("decision/interval", ap.llm_interval.value())
 
     def _load_settings(self):
         s = self._settings
+        tp = self.train_panel
+        ap = self.agent_panel
         if s.value("app/mode"):
             self._switch_mode(s.value("app/mode"))
         if s.value("source/type"):
-            self.source_type.setCurrentText(s.value("source/type"))
+            ap.source_type.setCurrentText(s.value("source/type"))
         if s.value("source/path"):
-            self.path_input.setText(s.value("source/path"))
+            ap.path_input.setText(s.value("source/path"))
         if s.value("source/loop") is not None:
-            self.loop_combo.setCurrentIndex(int(s.value("source/loop", 0)))
+            ap.loop_combo.setCurrentIndex(int(s.value("source/loop", 0)))
         if s.value("source/camera") is not None:
-            self.camera_device.setValue(int(s.value("source/camera", 0)))
+            ap.camera_device.setValue(int(s.value("source/camera", 0)))
         if s.value("source/monitor") is not None:
-            self.monitor_num.setValue(int(s.value("source/monitor", 1)))
+            ap.monitor_num.setValue(int(s.value("source/monitor", 1)))
         if s.value("source/stream_url"):
-            self.stream_input.setText(s.value("source/stream_url"))
+            ap.stream_input.setText(s.value("source/stream_url"))
         if s.value("detector/model"):
-            self.model_combo.setEditText(s.value("detector/model"))
+            tp.model_combo.setEditText(s.value("detector/model"))
         if s.value("detector/confidence") is not None:
-            self.conf_spin.setValue(float(s.value("detector/confidence", 0.5)))
+            tp.conf_spin.setValue(float(s.value("detector/confidence", 0.5)))
         if s.value("detector/imgsz"):
-            self.imgsz_combo.setCurrentText(s.value("detector/imgsz"))
+            tp.imgsz_combo.setCurrentText(s.value("detector/imgsz"))
         if s.value("decision/engine"):
-            self.engine_combo.setCurrentText(s.value("decision/engine"))
+            ap.engine_combo.setCurrentText(s.value("decision/engine"))
         if s.value("decision/trained_dir"):
-            self.trained_model_dir.setText(s.value("decision/trained_dir"))
+            ap.trained_model_dir.setText(s.value("decision/trained_dir"))
         if s.value("decision/trained_conf") is not None:
-            self.trained_conf_spin.setValue(float(s.value("decision/trained_conf", 0.3)))
+            ap.trained_conf_spin.setValue(float(s.value("decision/trained_conf", 0.3)))
         if s.value("decision/trained_action_map"):
-            self.trained_action_map_edit.setPlainText(s.value("decision/trained_action_map"))
+            ap.trained_action_map_edit.setPlainText(s.value("decision/trained_action_map"))
         if s.value("recorder/dir"):
-            self.rec_dir_input.setText(s.value("recorder/dir"))
+            tp.rec_dir_input.setText(s.value("recorder/dir"))
         if s.value("train/data_dir"):
-            self.dt_data_dir.setText(s.value("train/data_dir"))
+            tp.dt_data_dir.setText(s.value("train/data_dir"))
         if s.value("train/output_dir"):
-            self.dt_output_dir.setText(s.value("train/output_dir"))
+            tp.dt_output_dir.setText(s.value("train/output_dir"))
         if s.value("train/model_type"):
-            self.dt_model_type.setCurrentText(s.value("train/model_type"))
+            tp.dt_model_type.setCurrentText(s.value("train/model_type"))
         if s.value("train/epochs") is not None:
-            self.dt_epochs_spin.setValue(int(s.value("train/epochs", 100)))
+            tp.dt_epochs_spin.setValue(int(s.value("train/epochs", 100)))
         if s.value("train/lr") is not None:
-            self.dt_lr_spin.setValue(float(s.value("train/lr", 0.001)))
+            tp.dt_lr_spin.setValue(float(s.value("train/lr", 0.001)))
         if s.value("decision/provider"):
-            self.llm_provider_combo.setCurrentText(s.value("decision/provider"))
+            tp.llm_provider_combo.setCurrentText(s.value("decision/provider"))
         if s.value("decision/model"):
-            self.llm_model_combo.setCurrentText(s.value("decision/model"))
+            tp.llm_model_combo.setCurrentText(s.value("decision/model"))
         if s.value("decision/base_url"):
-            self.llm_base_url.setText(s.value("decision/base_url"))
+            tp.llm_base_url.setText(s.value("decision/base_url"))
         if s.value("decision/interval") is not None:
-            self.llm_interval.setValue(float(s.value("decision/interval", 1.0)))
+            ap.llm_interval.setValue(float(s.value("decision/interval", 1.0)))
 
     def closeEvent(self, event):
         self._save_settings()
@@ -1736,16 +1224,16 @@ class MainWindow(QMainWindow):
 
         if ext in video_exts:
             self._switch_mode("agent")
-            self.source_type.setCurrentText("video")
-            self.path_input.setText(path)
+            self.agent_panel.source_type.setCurrentText("video")
+            self.agent_panel.path_input.setText(path)
             self._log(f"已加载视频: {Path(path).name}")
         elif ext in image_exts:
             self._switch_mode("agent")
-            self.source_type.setCurrentText("image")
-            self.path_input.setText(path)
+            self.agent_panel.source_type.setCurrentText("image")
+            self.agent_panel.path_input.setText(path)
             self._log(f"已加载图片: {Path(path).name}")
         elif ext in model_exts:
-            self.model_combo.setEditText(path)
+            self.train_panel.model_combo.setEditText(path)
             self._log(f"已加载模型: {Path(path).name}")
         else:
             self._log(f"不支持的文件类型: {ext}")
