@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QLabel, QComboBox, QLineEdit, QPushButton, QSpinBox,
     QDoubleSpinBox, QFileDialog, QTextEdit, QSplitter, QMessageBox,
     QScrollArea, QSizePolicy, QDialog, QTabWidget, QFormLayout,
-    QProgressBar,
+    QProgressBar, QCheckBox,
 )
 
 from ..sources import create_source
@@ -84,6 +84,12 @@ class MainWindow(QMainWindow):
         self._build_record_train_tab()
         self._build_scene_tab()
         left_layout.addWidget(self.config_tabs, 0)
+
+        # -- DryRun 开关 --
+        self.dryrun_check = QCheckBox("仅观察（不控制键盘鼠标）")
+        self.dryrun_check.setChecked(True)
+        self.dryrun_check.setToolTip("勾选后只显示决策结果，不实际执行键盘/鼠标操作")
+        left_layout.addWidget(self.dryrun_check)
 
         # -- 操作按钮 --
         btn_layout = QHBoxLayout()
@@ -1078,10 +1084,25 @@ class MainWindow(QMainWindow):
             return []
 
         registry = ToolRegistry()
-        registry.register(KeyboardTool())
-        registry.register(MouseTool())
-        registry.register(ApiCallTool())
-        registry.register(ShellTool())
+        if self.dryrun_check.isChecked():
+            from ..tools.base import BaseTool, ToolResult
+            class _DryRunTool(BaseTool):
+                def __init__(self, tool_name):
+                    self._name = tool_name
+                @property
+                def name(self): return self._name
+                @property
+                def description(self): return f"DryRun {self._name}"
+                @property
+                def parameters_schema(self): return {"type": "object", "properties": {}}
+                def execute(self, **kwargs): return ToolResult(success=True)
+            for name in ("keyboard", "mouse", "api_call", "shell"):
+                registry.register(_DryRunTool(name))
+        else:
+            registry.register(KeyboardTool())
+            registry.register(MouseTool())
+            registry.register(ApiCallTool())
+            registry.register(ShellTool())
 
         if engine_type == "rule":
             engine = RuleEngine()
