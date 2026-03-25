@@ -1343,6 +1343,10 @@ class MainWindow(QMainWindow):
         scrollbar = self.decision_log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+        # 决策/执行动作显示在视频画面上
+        if any(tag in msg for tag in ("[决策]", "[执行]")):
+            self.video_widget.set_action(msg, duration=2.0)
+
     def _log(self, text: str):
         self.log_text.append(text)
         scrollbar = self.log_text.verticalScrollBar()

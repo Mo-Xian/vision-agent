@@ -23,7 +23,15 @@ class VideoWidget(QLabel):
             "border-radius: 10px;"
         )
         self._colors: dict[int, tuple] = {}
+        self._action_text: str = ""
+        self._action_expire: float = 0
         self._show_empty_state()
+
+    def set_action(self, text: str, duration: float = 2.0):
+        """设置要在画面上显示的决策动作文本。"""
+        import time
+        self._action_text = text
+        self._action_expire = time.time() + duration
 
     def update_frame(self, frame: np.ndarray, result: DetectionResult):
         """绘制检测结果并更新显示。"""
@@ -117,28 +125,66 @@ class VideoWidget(QLabel):
                         cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
     def _draw_overlay(self, frame: np.ndarray, result: DetectionResult):
-        """在帧右上角绘制检测计数。"""
+        """在帧上绘制：右上角检测计数 + 左下角决策动作。"""
         h, w = frame.shape[:2]
+
+        # 右上角：检测计数
         count = len(result.detections)
-        if count == 0:
-            return
+        if count > 0:
+            text = f"{count} detected"
+            font_scale = 0.6
+            thickness = 1
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
 
-        text = f"{count} detected"
-        font_scale = 0.6
+            pad = 8
+            x = w - tw - pad * 2 - 10
+            y = 10
+
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (x, y), (x + tw + pad * 2, y + th + pad * 2), (0, 0, 0), -1)
+            cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+            cv2.putText(frame, text, (x + pad, y + th + pad),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (100, 220, 130), thickness, cv2.LINE_AA)
+
+        # 左下角：决策动作
+        import time
+        if self._action_text and time.time() < self._action_expire:
+            self._draw_action_badge(frame, self._action_text)
+
+    def _draw_action_badge(self, frame: np.ndarray, text: str):
+        """在画面左下角绘制决策动作标签。"""
+        h, w = frame.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        pad = 10
+        lines = text.split("\n")
+        font_scale = 0.55
         thickness = 1
-        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+        line_height = 22
 
-        pad = 8
-        x = w - tw - pad * 2 - 10
-        y = 10
+        # 计算背景尺寸
+        max_tw = 0
+        for line in lines:
+            (tw, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            max_tw = max(max_tw, tw)
 
-        # 半透明背景
+        box_w = max_tw + pad * 2
+        box_h = line_height * len(lines) + pad * 2
+        x1 = 10
+        y1 = h - box_h - 10
+
+        # 半透明深色背景
         overlay = frame.copy()
-        cv2.rectangle(overlay, (x, y), (x + tw + pad * 2, y + th + pad * 2), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+        cv2.rectangle(overlay, (x1, y1), (x1 + box_w, y1 + box_h), (20, 20, 20), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
 
-        cv2.putText(frame, text, (x + pad, y + th + pad),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (100, 220, 130), thickness, cv2.LINE_AA)
+        # 左侧彩色指示条
+        cv2.rectangle(frame, (x1, y1), (x1 + 4, y1 + box_h), (80, 200, 255), -1)
+
+        # 文本逐行绘制
+        for i, line in enumerate(lines):
+            ty = y1 + pad + line_height * (i + 1) - 4
+            color = (80, 200, 255) if i == 0 else (200, 200, 200)
+            cv2.putText(frame, line, (x1 + pad, ty), font, font_scale, color, thickness, cv2.LINE_AA)
 
     def _show_image(self, frame: np.ndarray):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
