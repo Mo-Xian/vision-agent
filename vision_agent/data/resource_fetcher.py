@@ -1,7 +1,14 @@
-"""网络资源搜索与下载：用 LLM 规划搜索策略，自动获取视频/图片。"""
+"""网络资源搜索与下载：用 LLM 规划搜索策略，自动获取视频/图片。
+
+支持的视频源:
+  - Bilibili（B站）搜索与下载
+  - 直接 URL 下载（任意视频链接）
+  - yt-dlp 支持的所有站点（可选）
+"""
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -9,11 +16,17 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.bilibili.com/",
+}
+
 
 class ResourceFetcher:
     """LLM 驱动的网络资源搜索与下载。
 
-    流程: 用户兴趣描述 → LLM 规划搜索关键词 → 搜索引擎获取资源 → 下载到本地
+    流程: 用户兴趣描述 → LLM 规划搜索关键词 → 搜索获取资源 → 下载到本地
     """
 
     def __init__(self, llm_provider=None, output_dir: str = "data/fetched",
@@ -34,12 +47,10 @@ class ResourceFetcher:
             except Exception:
                 pass
 
-    def plan_search(self, interest: str, resource_type: str = "video") -> dict:
-        """让 LLM 根据用户兴趣规划搜索策略。
+    # ── LLM 搜索规划 ──
 
-        Returns:
-            {"keywords": [...], "description": "...", "suggested_actions": [...]}
-        """
+    def plan_search(self, interest: str, resource_type: str = "video") -> dict:
+        """让 LLM 根据用户兴趣规划搜索策略。"""
         prompt = f"""用户对以下场景感兴趣，需要搜索相关的{resource_type}素材来训练视觉AI模型。
 
 用户兴趣描述: {interest}
@@ -54,8 +65,8 @@ class ResourceFetcher:
 }}
 
 要求:
-- keywords: 3-5个中文搜索关键词，用于搜索相关视频/图片
-- keywords_en: 对应的英文关键词（搜索范围更广）
+- keywords: 3-5个中文搜索关键词，适合在B站等中文平台搜索
+- keywords_en: 对应的英文关键词
 - description: 简短场景描述
 - suggested_actions: 4-6个适合该场景的决策动作（含 idle）
 - action_descriptions: 每个动作的简短说明"""
@@ -68,7 +79,6 @@ class ResourceFetcher:
                     max_tokens=1024,
                 )
                 text = response.text or ""
-                # 提取 JSON
                 if "```json" in text:
                     text = text.split("```json", 1)[1].split("```", 1)[0]
                 elif "```" in text:
@@ -80,7 +90,6 @@ class ResourceFetcher:
             except Exception as e:
                 self._log(f"LLM 规划失败: {e}")
 
-        # Fallback: 基础策略
         return {
             "keywords": [interest],
             "keywords_en": [interest],
@@ -89,83 +98,165 @@ class ResourceFetcher:
             "action_descriptions": {},
         }
 
-    def search_videos_yt(self, keywords: list[str], max_results: int = 5) -> list[dict]:
-        """用 yt-dlp 搜索 YouTube 视频（不下载，只获取信息）。"""
-        results = []
-        try:
-            import yt_dlp
-        except ImportError:
-            self._log("[提示] 需要安装 yt-dlp: pip install yt-dlp")
-            return results
+    # ── Bilibili 搜索 ──
 
-        for kw in keywords:
-            if self._stop:
-                break
-            self._log(f"搜索视频: {kw}")
-            opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "extract_flat": True,
-                "default_search": "ytsearch",
-            }
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    info = ydl.extract_info(f"ytsearch{max_results}:{kw}", download=False)
-                    for entry in (info.get("entries") or []):
-                        if entry and entry.get("url"):
-                            results.append({
-                                "type": "video",
-                                "url": entry["url"],
-                                "title": entry.get("title", ""),
-                                "duration": entry.get("duration", 0),
-                                "source": "youtube",
-                                "keyword": kw,
-                            })
-            except Exception as e:
-                self._log(f"搜索失败 ({kw}): {e}")
-
-        self._log(f"共找到 {len(results)} 个视频")
-        return results
-
-    def search_images(self, keywords: list[str], max_per_keyword: int = 10) -> list[dict]:
-        """搜索图片 URL（通过公开 API）。"""
+    def search_bilibili(self, keywords: list[str], max_results: int = 5) -> list[dict]:
+        """通过 Bilibili API 搜索视频。"""
         results = []
         for kw in keywords:
             if self._stop:
                 break
-            self._log(f"搜索图片: {kw}")
+            self._log(f"B站搜索: {kw}")
             try:
-                # 使用 Unsplash 免费 API（无需 key 的搜索）
                 resp = requests.get(
-                    "https://api.unsplash.com/search/photos",
-                    params={"query": kw, "per_page": max_per_keyword},
-                    headers={"Accept-Version": "v1"},
+                    "https://api.bilibili.com/x/web-interface/search/type",
+                    params={
+                        "keyword": kw,
+                        "search_type": "video",
+                        "page": 1,
+                        "pagesize": max_results,
+                    },
+                    headers=_HEADERS,
                     timeout=10,
                 )
-                if resp.status_code == 200:
-                    for item in resp.json().get("results", []):
-                        url = item.get("urls", {}).get("regular", "")
-                        if url:
-                            results.append({
-                                "type": "image",
-                                "url": url,
-                                "title": item.get("alt_description", ""),
-                                "source": "unsplash",
-                                "keyword": kw,
-                            })
+                data = resp.json()
+                for item in (data.get("data", {}).get("result", []) or []):
+                    bvid = item.get("bvid", "")
+                    if not bvid:
+                        continue
+                    # 清理 HTML 标签
+                    title = re.sub(r"<.*?>", "", item.get("title", ""))
+                    results.append({
+                        "type": "video",
+                        "url": f"https://www.bilibili.com/video/{bvid}",
+                        "bvid": bvid,
+                        "title": title,
+                        "duration": item.get("duration", ""),
+                        "source": "bilibili",
+                        "keyword": kw,
+                    })
             except Exception as e:
-                self._log(f"图片搜索失败 ({kw}): {e}")
+                self._log(f"B站搜索失败 ({kw}): {e}")
 
-        self._log(f"共找到 {len(results)} 张图片")
+        # 去重
+        seen = set()
+        unique = []
+        for r in results:
+            if r["url"] not in seen:
+                seen.add(r["url"])
+                unique.append(r)
+        results = unique
+
+        self._log(f"B站共找到 {len(results)} 个视频")
         return results
 
-    def download_video(self, url: str, filename: str = "") -> str | None:
-        """下载视频到本地。"""
+    # ── Bilibili 下载 ──
+
+    def download_bilibili(self, bvid: str, filename: str = "") -> str | None:
+        """下载 Bilibili 视频。"""
+        out_dir = self._output_dir / "videos"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # 获取 cid
+            resp = requests.get(
+                f"https://api.bilibili.com/x/player/pagelist",
+                params={"bvid": bvid},
+                headers=_HEADERS,
+                timeout=10,
+            )
+            pages = resp.json().get("data", [])
+            if not pages:
+                self._log(f"获取 cid 失败: {bvid}")
+                return None
+            cid = pages[0]["cid"]
+
+            # 获取视频流 URL
+            resp = requests.get(
+                "https://api.bilibili.com/x/player/playurl",
+                params={"bvid": bvid, "cid": cid, "qn": 16, "fnval": 1},
+                headers=_HEADERS,
+                timeout=10,
+            )
+            play_data = resp.json().get("data", {})
+            durl = play_data.get("durl", [])
+            if not durl:
+                self._log(f"获取视频流失败: {bvid}")
+                return None
+
+            video_url = durl[0]["url"]
+
+            # 下载
+            if not filename:
+                filename = f"{bvid}.mp4"
+            path = out_dir / filename
+
+            self._log(f"下载B站视频: {bvid}")
+            resp = requests.get(
+                video_url,
+                headers={**_HEADERS, "Referer": f"https://www.bilibili.com/video/{bvid}"},
+                stream=True,
+                timeout=30,
+            )
+            resp.raise_for_status()
+
+            total = int(resp.headers.get("content-length", 0))
+            downloaded = 0
+            with open(path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0 and downloaded % (1024 * 512) == 0:
+                        pct = downloaded / total * 100
+                        self._log(f"  下载进度: {pct:.0f}%")
+
+            self._log(f"下载完成: {filename} ({downloaded // 1024}KB)")
+            return str(path)
+
+        except Exception as e:
+            self._log(f"B站下载失败 ({bvid}): {e}")
+            return None
+
+    # ── 通用 URL 下载 ──
+
+    def download_video_url(self, url: str, filename: str = "") -> str | None:
+        """直接下载视频 URL（支持任意 HTTP 视频链接）。"""
+        out_dir = self._output_dir / "videos"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if not filename:
+            # 从 URL 提取文件名
+            name = url.split("/")[-1].split("?")[0]
+            if not name.endswith((".mp4", ".avi", ".mkv", ".webm")):
+                name = f"video_{int(time.time())}.mp4"
+            filename = name
+        path = out_dir / filename
+
+        try:
+            self._log(f"下载视频: {url[:80]}...")
+            resp = requests.get(url, headers=_HEADERS, stream=True, timeout=30)
+            resp.raise_for_status()
+
+            with open(path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 64):
+                    f.write(chunk)
+
+            size_kb = path.stat().st_size // 1024
+            self._log(f"下载完成: {filename} ({size_kb}KB)")
+            return str(path)
+        except Exception as e:
+            self._log(f"视频下载失败: {e}")
+            return None
+
+    # ── yt-dlp 通用下载（可选） ──
+
+    def download_with_ytdlp(self, url: str, filename: str = "") -> str | None:
+        """用 yt-dlp 下载视频（支持 B站/YouTube 等多平台）。"""
         try:
             import yt_dlp
         except ImportError:
-            self._log("[错误] 需要安装 yt-dlp")
-            return None
+            self._log("[提示] yt-dlp 未安装，尝试直接下载")
+            return self.download_video_url(url, filename)
 
         out_dir = self._output_dir / "videos"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -173,9 +264,10 @@ class ResourceFetcher:
         opts = {
             "quiet": True,
             "no_warnings": True,
-            "format": "worst[ext=mp4]",  # 下载最小分辨率节省空间
+            "format": "worst[ext=mp4]/worst",
             "outtmpl": str(out_dir / (filename or "%(title)s.%(ext)s")),
-            "max_filesize": 100 * 1024 * 1024,  # 100MB 上限
+            "max_filesize": 100 * 1024 * 1024,
+            "socket_timeout": 30,
         }
 
         try:
@@ -185,8 +277,40 @@ class ResourceFetcher:
                 self._log(f"下载完成: {Path(path).name}")
                 return path
         except Exception as e:
-            self._log(f"下载失败: {e}")
+            self._log(f"yt-dlp 下载失败: {e}")
             return None
+
+    # ── 图片搜索 ──
+
+    def search_images_bing(self, keywords: list[str], max_per_keyword: int = 10) -> list[dict]:
+        """通过 Bing 图片搜索获取图片 URL。"""
+        results = []
+        for kw in keywords:
+            if self._stop:
+                break
+            self._log(f"搜索图片: {kw}")
+            try:
+                resp = requests.get(
+                    "https://www.bing.com/images/search",
+                    params={"q": kw, "form": "HDRSC2", "first": 1},
+                    headers=_HEADERS,
+                    timeout=10,
+                )
+                # 从页面中提取图片 URL
+                urls = re.findall(r'murl&quot;:&quot;(https?://[^&]+?)&quot;', resp.text)
+                for url in urls[:max_per_keyword]:
+                    results.append({
+                        "type": "image",
+                        "url": url,
+                        "title": kw,
+                        "source": "bing",
+                        "keyword": kw,
+                    })
+            except Exception as e:
+                self._log(f"图片搜索失败 ({kw}): {e}")
+
+        self._log(f"共找到 {len(results)} 张图片")
+        return results
 
     def download_image(self, url: str, filename: str = "") -> str | None:
         """下载图片到本地。"""
@@ -194,11 +318,11 @@ class ResourceFetcher:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         if not filename:
-            filename = f"img_{int(time.time()*1000)}.jpg"
+            filename = f"img_{int(time.time() * 1000)}.jpg"
         path = out_dir / filename
 
         try:
-            resp = requests.get(url, timeout=15, stream=True)
+            resp = requests.get(url, headers=_HEADERS, timeout=15, stream=True)
             resp.raise_for_status()
             with open(path, "wb") as f:
                 for chunk in resp.iter_content(8192):
@@ -208,12 +332,19 @@ class ResourceFetcher:
             self._log(f"图片下载失败: {e}")
             return None
 
+    # ── 统一入口 ──
+
     def fetch(self, interest: str, resource_type: str = "video",
-              max_results: int = 5, progress_callback=None) -> dict:
+              max_results: int = 5, source: str = "bilibili",
+              progress_callback=None) -> dict:
         """完整的搜索+下载流程。
 
-        Returns:
-            {"plan": {...}, "resources": [...], "local_files": [...]}
+        Args:
+            interest: 用户兴趣描述
+            resource_type: "video" 或 "image"
+            max_results: 每个关键词的最大搜索结果数
+            source: 视频源 "bilibili" / "url" / "ytdlp"
+            progress_callback: (phase, pct) 回调
         """
         self._stop = False
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -231,12 +362,14 @@ class ResourceFetcher:
 
         # 2. 搜索
         self._log("Step 2/3: 搜索网络资源...")
-        all_keywords = plan.get("keywords", []) + plan.get("keywords_en", [])
+        keywords = plan.get("keywords", [])
 
-        if resource_type == "video":
-            resources = self.search_videos_yt(all_keywords, max_results=max_results)
+        if resource_type == "image":
+            resources = self.search_images_bing(keywords, max_per_keyword=max_results)
+        elif source == "bilibili":
+            resources = self.search_bilibili(keywords, max_results=max_results)
         else:
-            resources = self.search_images(all_keywords, max_per_keyword=max_results)
+            resources = []  # URL 模式不搜索，直接由用户或 LLM 提供
 
         if progress_callback:
             progress_callback("searching", 0.3)
@@ -252,7 +385,12 @@ class ResourceFetcher:
                 break
 
             if res["type"] == "video":
-                path = self.download_video(res["url"])
+                if res.get("bvid"):
+                    path = self.download_bilibili(res["bvid"])
+                elif source == "ytdlp":
+                    path = self.download_with_ytdlp(res["url"])
+                else:
+                    path = self.download_video_url(res["url"])
             else:
                 path = self.download_image(res["url"])
 

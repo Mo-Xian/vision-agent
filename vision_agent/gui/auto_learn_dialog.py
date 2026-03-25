@@ -76,6 +76,11 @@ class AutoLearnDialog(QDialog):
         self.resource_type = QComboBox()
         self.resource_type.addItems(["video", "image"])
         res_row.addWidget(self.resource_type)
+        res_row.addWidget(QLabel("来源:"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["bilibili", "url", "ytdlp"])
+        self.source_combo.setToolTip("bilibili: B站搜索下载\nurl: 直接URL下载\nytdlp: yt-dlp多平台下载")
+        res_row.addWidget(self.source_combo)
         res_row.addWidget(QLabel("数量:"))
         self.max_resources = QSpinBox()
         self.max_resources.setRange(1, 20)
@@ -213,6 +218,7 @@ class AutoLearnDialog(QDialog):
             "rl_steps": self.rl_steps.value(),
             "skip_fetch": self.skip_fetch.isChecked(),
             "video_paths": video_paths,
+            "source": self.source_combo.currentText(),
         }
 
         self._worker_thread = threading.Thread(

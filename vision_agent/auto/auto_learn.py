@@ -74,7 +74,8 @@ class AutoLearn(LoggingMixin):
             max_resources: int = 3, sample_count: int = 300,
             rl_steps: int = 2000, model_type: str = "mlp",
             epochs: int = 100, skip_fetch: bool = False,
-            video_paths: list[str] | None = None) -> dict:
+            video_paths: list[str] | None = None,
+            source: str = "bilibili") -> dict:
         """执行完整的自动学习管线。
 
         Args:
@@ -138,6 +139,7 @@ class AutoLearn(LoggingMixin):
 
                 fetch_result = fetcher.fetch(
                     interest, resource_type, max_results=max_resources,
+                    source=source,
                     progress_callback=lambda p, pct: self._progress("fetch", 0.1 + pct * 0.15),
                 )
                 local_files = fetch_result.get("local_files", [])
