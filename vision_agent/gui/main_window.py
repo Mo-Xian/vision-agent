@@ -181,10 +181,14 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.stop_btn)
         config_layout.insertWidget(1, btn_widget)
 
-        # -- 状态栏 --
-        self._build_status_bar(left_layout)
+        # -- 状态栏 + 日志（仅 Agent 模式可见） --
+        self._agent_info = QWidget()
+        ai_layout = QVBoxLayout(self._agent_info)
+        ai_layout.setContentsMargins(0, 0, 0, 0)
+        ai_layout.setSpacing(4)
 
-        # -- 日志区域 --
+        self._build_status_bar(ai_layout)
+
         self.log_tabs = QTabWidget()
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -192,7 +196,9 @@ class MainWindow(QMainWindow):
         self.decision_log_text = QTextEdit()
         self.decision_log_text.setReadOnly(True)
         self.log_tabs.addTab(self.decision_log_text, "决策")
-        left_layout.addWidget(self.log_tabs, 0)
+        ai_layout.addWidget(self.log_tabs, 1)
+
+        left_layout.addWidget(self._agent_info, 0)
 
         splitter.addWidget(left_panel)
 
@@ -297,6 +303,7 @@ class MainWindow(QMainWindow):
         self._current_mode = mode
         index = {"train": 0, "agent": 1, "llm": 2}.get(mode, 1)
         self.mode_stack.setCurrentIndex(index)
+        self._agent_info.setVisible(mode == "agent")
 
         for btn, m in [
             (self.mode_train_btn, "train"),
