@@ -129,28 +129,6 @@ class TrainPanel(QWidget):
         more = CollapsibleSection("更多设置")
         mg = more.content_layout()
 
-        # LLM 配置
-        mg.addWidget(QLabel("── LLM 配置 ──"))
-        llm_form = QFormLayout()
-        llm_form.setSpacing(4)
-        self.llm_provider_combo = QComboBox()
-        llm_form.addRow("供应商", self.llm_provider_combo)
-        self.llm_model_combo = QComboBox()
-        self.llm_model_combo.setEditable(True)
-        llm_form.addRow("模型", self.llm_model_combo)
-        self.llm_api_key = QLineEdit()
-        self.llm_api_key.setEchoMode(QLineEdit.Password)
-        self.llm_api_key.setPlaceholderText("留空用环境变量")
-        llm_form.addRow("API Key", self.llm_api_key)
-        self.llm_base_url = QLineEdit()
-        self.llm_base_url.setPlaceholderText("留空用默认地址")
-        llm_form.addRow("Base URL", self.llm_base_url)
-        mg.addLayout(llm_form)
-        self.llm_test_btn = QPushButton("测试连接")
-        self.llm_test_btn.setObjectName("infoBtn")
-        self.llm_test_btn.setCursor(Qt.PointingHandCursor)
-        mg.addWidget(self.llm_test_btn)
-
         # YOLO 模型
         mg.addWidget(QLabel("── YOLO 模型 ──"))
         self.model_combo = QComboBox()

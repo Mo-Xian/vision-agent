@@ -33,6 +33,7 @@ from .worker import DetectionWorker
 from .decision_train_worker import DecisionTrainWorker
 from .train_panel import TrainPanel
 from .agent_panel import AgentPanel
+from .llm_panel import LLMPanel
 
 from .styles import MAIN_STYLESHEET, COLORS
 
@@ -128,23 +129,28 @@ class MainWindow(QMainWindow):
 
         # -- 模式切换 --
         mode_row = QHBoxLayout()
-        mode_row.setSpacing(6)
-        self.mode_train_btn = QPushButton("训练工坊")
-        self.mode_agent_btn = QPushButton("Agent 执行")
-        self.mode_train_btn.setCursor(Qt.PointingHandCursor)
-        self.mode_agent_btn.setCursor(Qt.PointingHandCursor)
-        self.mode_train_btn.clicked.connect(lambda: self._switch_mode("train"))
-        self.mode_agent_btn.clicked.connect(lambda: self._switch_mode("agent"))
-        mode_row.addWidget(self.mode_train_btn)
-        mode_row.addWidget(self.mode_agent_btn)
+        mode_row.setSpacing(4)
+        self.mode_train_btn = QPushButton("训练")
+        self.mode_agent_btn = QPushButton("Agent")
+        self.mode_llm_btn = QPushButton("LLM")
+        for btn, mode in [
+            (self.mode_train_btn, "train"),
+            (self.mode_agent_btn, "agent"),
+            (self.mode_llm_btn, "llm"),
+        ]:
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked=False, m=mode: self._switch_mode(m))
+            mode_row.addWidget(btn)
         left_layout.addLayout(mode_row)
 
         # -- 模式面板 (Stacked) --
         self.mode_stack = QStackedWidget()
         self.train_panel = TrainPanel()
         self.agent_panel = AgentPanel()
+        self.llm_panel = LLMPanel()
         self.mode_stack.addWidget(self.train_panel)   # index 0
         self.mode_stack.addWidget(self.agent_panel)   # index 1
+        self.mode_stack.addWidget(self.llm_panel)     # index 2
         left_layout.addWidget(self.mode_stack, 1)
 
         # -- Agent 控制区 --
@@ -238,12 +244,15 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         tp = self.train_panel
         ap = self.agent_panel
+        lp = self.llm_panel
+
+        # LLM 面板
+        lp.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
+        lp.llm_provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        lp.llm_test_btn.clicked.connect(self._test_llm_connection)
 
         # 训练面板
         tp.auto_learn_btn.clicked.connect(self._open_auto_learn)
-        tp.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
-        tp.llm_provider_combo.currentTextChanged.connect(self._on_provider_changed)
-        tp.llm_test_btn.clicked.connect(self._test_llm_connection)
         tp.load_model_btn.clicked.connect(self._load_custom_model)
         tp.train_btn_open.clicked.connect(self._open_train_dialog)
         tp.auto_annotate_btn.clicked.connect(self._open_annotate_dialog)
@@ -260,7 +269,7 @@ class MainWindow(QMainWindow):
         tp.import_btn.clicked.connect(self._import_config)
 
         # 初始化供应商预设
-        self._on_provider_changed(tp.llm_provider_combo.currentText())
+        self._on_provider_changed(lp.llm_provider_combo.currentText())
 
         # Agent 面板
         ap.source_type.currentTextChanged.connect(self._on_source_type_changed)
@@ -284,14 +293,17 @@ class MainWindow(QMainWindow):
 
     def _switch_mode(self, mode: str):
         self._current_mode = mode
-        is_train = mode == "train"
-        self.mode_stack.setCurrentIndex(0 if is_train else 1)
-        self.agent_controls.setVisible(not is_train)
+        index = {"train": 0, "agent": 1, "llm": 2}.get(mode, 1)
+        self.mode_stack.setCurrentIndex(index)
+        self.agent_controls.setVisible(mode == "agent")
 
-        self.mode_train_btn.setObjectName("modeBtnActive" if is_train else "modeBtnInactive")
-        self.mode_agent_btn.setObjectName("modeBtnInactive" if is_train else "modeBtnActive")
-        self.mode_train_btn.setStyle(self.mode_train_btn.style())
-        self.mode_agent_btn.setStyle(self.mode_agent_btn.style())
+        for btn, m in [
+            (self.mode_train_btn, "train"),
+            (self.mode_agent_btn, "agent"),
+            (self.mode_llm_btn, "llm"),
+        ]:
+            btn.setObjectName("modeBtnActive" if m == mode else "modeBtnInactive")
+            btn.setStyle(btn.style())
 
     # ================================================================
     #  Profile 管理
@@ -697,29 +709,29 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _on_provider_changed(self, provider_name: str):
-        tp = self.train_panel
+        lp = self.llm_panel
         preset = PROVIDER_PRESETS.get(provider_name, {})
-        tp.llm_model_combo.clear()
-        tp.llm_model_combo.addItems(preset.get("models", []))
-        tp.llm_base_url.setText(preset.get("base_url", ""))
+        lp.llm_model_combo.clear()
+        lp.llm_model_combo.addItems(preset.get("models", []))
+        lp.llm_base_url.setText(preset.get("base_url", ""))
         env_key = preset.get("api_key_env", "")
         if env_key and os.environ.get(env_key):
-            tp.llm_api_key.setPlaceholderText(f"已从 {env_key} 读取")
+            lp.llm_api_key.setPlaceholderText(f"已从 {env_key} 读取")
         else:
-            tp.llm_api_key.setPlaceholderText(f"API Key" + (f" 或设置 {env_key}" if env_key else ""))
+            lp.llm_api_key.setPlaceholderText(f"API Key" + (f" 或设置 {env_key}" if env_key else ""))
 
     @Slot()
     def _test_llm_connection(self):
-        tp = self.train_panel
-        provider_name = tp.llm_provider_combo.currentText()
+        lp = self.llm_panel
+        provider_name = lp.llm_provider_combo.currentText()
         api_key = self._get_llm_api_key()
-        model = tp.llm_model_combo.currentText()
-        base_url = tp.llm_base_url.text().strip()
+        model = lp.llm_model_combo.currentText()
+        base_url = lp.llm_base_url.text().strip()
         if not api_key and provider_name != "ollama":
             QMessageBox.warning(self, "提示", "请输入 API Key")
             return
-        tp.llm_test_btn.setEnabled(False)
-        tp.llm_test_btn.setText("测试中...")
+        lp.llm_test_btn.setEnabled(False)
+        lp.llm_test_btn.setText("测试中...")
         try:
             provider = create_provider(provider_name, api_key or "ollama", model, base_url)
             ok = provider.test_connection()
@@ -734,29 +746,29 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"连接失败:\n{e}")
         finally:
-            tp.llm_test_btn.setEnabled(True)
-            tp.llm_test_btn.setText("测试连接")
+            lp.llm_test_btn.setEnabled(True)
+            lp.llm_test_btn.setText("测试连接")
 
     def _get_llm_api_key(self) -> str:
-        tp = self.train_panel
-        key = tp.llm_api_key.text().strip()
+        lp = self.llm_panel
+        key = lp.llm_api_key.text().strip()
         if key:
             return key
-        provider_name = tp.llm_provider_combo.currentText()
+        provider_name = lp.llm_provider_combo.currentText()
         env_key = PROVIDER_PRESETS.get(provider_name, {}).get("api_key_env", "")
         return os.environ.get(env_key, "") if env_key else ""
 
     def _on_agent_tab_changed(self, index: int):
         tab_text = self.agent_panel.tabText(index)
-        if tab_text == "对话控制" and self.agent_panel.chat_panel._provider is None:
+        if tab_text == "对话" and self.agent_panel.chat_panel._provider is None:
             self._init_chat_provider()
 
     def _init_chat_provider(self):
-        tp = self.train_panel
+        lp = self.llm_panel
         api_key = self._get_llm_api_key()
-        provider_name = tp.llm_provider_combo.currentText()
-        model = tp.llm_model_combo.currentText()
-        base_url = tp.llm_base_url.text().strip()
+        provider_name = lp.llm_provider_combo.currentText()
+        model = lp.llm_model_combo.currentText()
+        base_url = lp.llm_base_url.text().strip()
 
         if not api_key and provider_name != "ollama":
             self.agent_panel.chat_panel.set_provider(None)
@@ -849,9 +861,9 @@ class MainWindow(QMainWindow):
                 return []
         elif engine_type == "llm":
             api_key = self._get_llm_api_key()
-            provider_name = self.train_panel.llm_provider_combo.currentText()
-            model = self.train_panel.llm_model_combo.currentText()
-            base_url = self.train_panel.llm_base_url.text().strip()
+            provider_name = self.llm_panel.llm_provider_combo.currentText()
+            model = self.llm_panel.llm_model_combo.currentText()
+            base_url = self.llm_panel.llm_base_url.text().strip()
             if not api_key and provider_name != "ollama":
                 self._log("[警告] API Key 未设置，LLM 引擎不可用")
                 return []
@@ -1138,9 +1150,10 @@ class MainWindow(QMainWindow):
         s.setValue("train/model_type", tp.dt_model_type.currentText())
         s.setValue("train/epochs", tp.dt_epochs_spin.value())
         s.setValue("train/lr", tp.dt_lr_spin.value())
-        s.setValue("decision/provider", tp.llm_provider_combo.currentText())
-        s.setValue("decision/model", tp.llm_model_combo.currentText())
-        s.setValue("decision/base_url", tp.llm_base_url.text())
+        lp = self.llm_panel
+        s.setValue("decision/provider", lp.llm_provider_combo.currentText())
+        s.setValue("decision/model", lp.llm_model_combo.currentText())
+        s.setValue("decision/base_url", lp.llm_base_url.text())
         s.setValue("decision/interval", ap.llm_interval.value())
 
     def _load_settings(self):
@@ -1187,12 +1200,13 @@ class MainWindow(QMainWindow):
             tp.dt_epochs_spin.setValue(int(s.value("train/epochs", 100)))
         if s.value("train/lr") is not None:
             tp.dt_lr_spin.setValue(float(s.value("train/lr", 0.001)))
+        lp = self.llm_panel
         if s.value("decision/provider"):
-            tp.llm_provider_combo.setCurrentText(s.value("decision/provider"))
+            lp.llm_provider_combo.setCurrentText(s.value("decision/provider"))
         if s.value("decision/model"):
-            tp.llm_model_combo.setCurrentText(s.value("decision/model"))
+            lp.llm_model_combo.setCurrentText(s.value("decision/model"))
         if s.value("decision/base_url"):
-            tp.llm_base_url.setText(s.value("decision/base_url"))
+            lp.llm_base_url.setText(s.value("decision/base_url"))
         if s.value("decision/interval") is not None:
             ap.llm_interval.setValue(float(s.value("decision/interval", 1.0)))
 
