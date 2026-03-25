@@ -153,18 +153,20 @@ class MainWindow(QMainWindow):
         self.mode_stack.addWidget(self.llm_panel)     # index 2
         left_layout.addWidget(self.mode_stack, 1)
 
-        # -- Agent 控制区 --
-        self.agent_controls = QWidget()
-        ac_layout = QVBoxLayout(self.agent_controls)
-        ac_layout.setContentsMargins(0, 0, 0, 0)
-        ac_layout.setSpacing(6)
+        # -- Agent 控制区（嵌入配置 Tab 顶部） --
+        ap = self.agent_panel
+        config_scroll = ap.widget(0)  # 配置 Tab 的 QScrollArea
+        config_widget = config_scroll.widget()  # 内容 QWidget
+        config_layout = config_widget.layout()
 
         self.dryrun_check = QCheckBox("仅观察（不控制键盘鼠标）")
         self.dryrun_check.setChecked(True)
         self.dryrun_check.setToolTip("勾选后只显示决策结果，不实际执行键盘/鼠标操作")
-        ac_layout.addWidget(self.dryrun_check)
+        config_layout.insertWidget(0, self.dryrun_check)
 
-        btn_layout = QHBoxLayout()
+        btn_widget = QWidget()
+        btn_layout = QHBoxLayout(btn_widget)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
         btn_layout.setSpacing(8)
         self.start_btn = QPushButton("▶  启动检测")
         self.start_btn.setObjectName("startBtn")
@@ -177,9 +179,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop_detection)
         btn_layout.addWidget(self.stop_btn)
-        ac_layout.addLayout(btn_layout)
-
-        left_layout.addWidget(self.agent_controls)
+        config_layout.insertWidget(1, btn_widget)
 
         # -- 状态栏 --
         self._build_status_bar(left_layout)
@@ -297,7 +297,6 @@ class MainWindow(QMainWindow):
         self._current_mode = mode
         index = {"train": 0, "agent": 1, "llm": 2}.get(mode, 1)
         self.mode_stack.setCurrentIndex(index)
-        self.agent_controls.setVisible(mode == "agent")
 
         for btn, m in [
             (self.mode_train_btn, "train"),

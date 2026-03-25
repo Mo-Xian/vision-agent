@@ -8,7 +8,7 @@ import traceback
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Signal, Slot, QTimer
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
@@ -54,7 +54,11 @@ _TEXT_MODE_SUFFIX = """
 class ChatPanel(QWidget):
     """LLM 对话面板，支持自然语言控制键鼠。"""
 
-    log_signal = Signal(str)  # 日志输出
+    log_signal = Signal(str)
+    # 跨线程信号：后台线程 → GUI 线程
+    _sig_append = Signal(str)
+    _sig_status = Signal(str)
+    _sig_done = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,10 +70,15 @@ class ChatPanel(QWidget):
         self._current_frame: np.ndarray | None = None
         self._dryrun = False
         self._text_mode: bool | None = None
-        self._try_auto_init: "callable | None" = None  # 由父窗口设置
-        self._log_callback = None  # 外部日志回调
+        self._try_auto_init: "callable | None" = None
+        self._log_callback = None
 
         self._init_ui()
+
+        # 连接跨线程信号（保证 GUI 线程安全）
+        self._sig_append.connect(self._do_append)
+        self._sig_status.connect(self._do_set_status)
+        self._sig_done.connect(self._on_llm_done)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -82,7 +91,7 @@ class ChatPanel(QWidget):
         self.chat_display.setFont(QFont("Microsoft YaHei", 10))
         self.chat_display.setStyleSheet(
             "QTextEdit { border: 1px solid #253352; border-radius: 6px; "
-            "padding: 6px; background-color: #0f1525; }"
+            "padding: 6px; background-color: #0f1525; color: #e8ecf4; }"
         )
         layout.addWidget(self.chat_display, 1)
 
@@ -97,19 +106,19 @@ class ChatPanel(QWidget):
 
         self.attach_screen_check = QCheckBox("附带截图")
         self.attach_screen_check.setChecked(False)
-        self.attach_screen_check.setToolTip("发送消息时附带当前画面截图，让 LLM 能看到屏幕")
+        self.attach_screen_check.setToolTip("发送消息时附带当前画面截图")
         opts_row.addWidget(self.attach_screen_check)
 
         self.dryrun_check = QCheckBox("仅模拟")
         self.dryrun_check.setChecked(False)
-        self.dryrun_check.setToolTip("勾选后工具调用不会真正执行，仅显示将要执行的操作")
+        self.dryrun_check.setToolTip("工具调用不会真正执行，仅显示将要执行的操作")
         self.dryrun_check.toggled.connect(self._on_dryrun_changed)
         opts_row.addWidget(self.dryrun_check)
 
         opts_row.addStretch()
 
-        self.clear_btn = QPushButton("清空对话")
-        self.clear_btn.setMaximumWidth(70)
+        self.clear_btn = QPushButton("清空")
+        self.clear_btn.setMaximumWidth(50)
         self.clear_btn.clicked.connect(self.clear_conversation)
         opts_row.addWidget(self.clear_btn)
 
@@ -121,7 +130,7 @@ class ChatPanel(QWidget):
 
         self.input_edit = QLineEdit()
         self.input_edit.setFont(QFont("Microsoft YaHei", 11))
-        self.input_edit.setPlaceholderText("输入指令，如：点击屏幕中间、按下 Ctrl+C ...")
+        self.input_edit.setPlaceholderText("输入指令或聊天内容...")
         self.input_edit.returnPressed.connect(self._on_send)
         self.input_edit.setStyleSheet(
             "QLineEdit { border: 1px solid #253352; border-radius: 6px; "
@@ -146,24 +155,20 @@ class ChatPanel(QWidget):
     # ── 外部接口 ──
 
     def set_provider(self, provider: LLMProvider | None):
-        """设置 LLM Provider。"""
         self._provider = provider
         self._text_mode = None
         if provider:
-            self._emit_log(f"[对话] Provider 已设置: {provider.provider_name}")
+            self._emit_log(f"[对话] Provider: {provider.provider_name}")
 
     def set_tool_registry(self, registry: ToolRegistry | None):
-        """设置工具注册表。"""
         self._registry = registry
         if registry:
-            self._emit_log(f"[对话] 工具已注册: {len(registry)} 个")
+            self._emit_log(f"[对话] 工具: {len(registry)} 个")
 
     def set_log_callback(self, callback):
-        """设置外部日志回调。"""
         self._log_callback = callback
 
     def update_frame(self, frame: np.ndarray):
-        """更新当前画面帧（供截图附带用）。"""
         self._current_frame = frame
 
     def _on_dryrun_changed(self, checked: bool):
@@ -177,9 +182,6 @@ class ChatPanel(QWidget):
             except Exception:
                 pass
 
-    def _set_status(self, text: str):
-        QTimer.singleShot(0, lambda: self.status_label.setText(text))
-
     # ── 对话逻辑 ──
 
     def _on_send(self):
@@ -187,52 +189,41 @@ class ChatPanel(QWidget):
         if not text or self._working:
             return
 
-        # 检查 Provider
         if not self._provider:
-            self._emit_log("[对话] Provider 为空，尝试自动初始化")
             if self._try_auto_init:
-                ok = self._try_auto_init()
-                self._emit_log(f"[对话] 自动初始化结果: {ok}")
-                if not ok:
-                    self._append_system("LLM 未配置。请先在 LLM 页面设置供应商和 API Key。")
+                if not self._try_auto_init():
+                    self._append_system("LLM 未配置。请先在 LLM 页面设置。")
                     return
             else:
-                self._append_system("LLM 未配置。请先在 LLM 页面设置供应商和 API Key。")
+                self._append_system("LLM 未配置。请先在 LLM 页面设置。")
                 return
 
-        # 再次检查（auto_init 可能设置了 provider）
         if not self._provider:
-            self._append_system("LLM Provider 初始化失败，请检查 LLM 配置。")
+            self._append_system("LLM 初始化失败。")
             return
 
         self.input_edit.clear()
         self._append_user(text)
-        self._set_status("思考中...")
+        self._sig_status.emit("思考中...")
 
-        # 构建消息
         user_content = self._build_user_content(text)
         self._conversation.append({"role": "user", "content": user_content})
 
-        # 截断历史
         if len(self._conversation) > self._max_history * 2:
             self._conversation = self._conversation[-self._max_history * 2:]
 
-        # 异步调用 LLM
         self._working = True
         self.send_btn.setEnabled(False)
         self.input_edit.setEnabled(False)
 
-        self._emit_log(f"[对话] 发送消息: {text[:50]}...")
-        thread = threading.Thread(target=self._call_llm, daemon=True)
-        thread.start()
+        self._emit_log(f"[对话] 发送: {text[:80]}")
+        threading.Thread(target=self._call_llm, daemon=True).start()
 
     def _build_user_content(self, text: str):
-        """构建用户消息内容（可能包含截图）。"""
         if not self.attach_screen_check.isChecked():
             return text
 
         frame = self._current_frame
-        # 如果没有从检测管线获取帧，尝试直接截屏
         if frame is None:
             frame = self._capture_screen()
 
@@ -244,37 +235,28 @@ class ChatPanel(QWidget):
             _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
             b64 = base64.b64encode(buf).decode("utf-8")
             return [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": b64,
-                    },
-                },
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/jpeg", "data": b64}},
                 {"type": "text", "text": text},
             ]
         return text
 
     @staticmethod
     def _capture_screen() -> "np.ndarray | None":
-        """截取当前屏幕（不依赖检测管线）。"""
         try:
             import mss
             with mss.mss() as sct:
-                monitor = sct.monitors[1]  # 主显示器
-                img = sct.grab(monitor)
-                frame = np.array(img)[:, :, :3]  # BGRA → BGR
-                return frame
+                return np.array(sct.grab(sct.monitors[1]))[:, :, :3]
         except ImportError:
             pass
         try:
             from PIL import ImageGrab
-            img = ImageGrab.grab()
-            frame = np.array(img)[:, :, ::-1]  # RGB → BGR
-            return frame
+            return np.array(ImageGrab.grab())[:, :, ::-1]
         except ImportError:
             return None
+
+    def _has_tools(self) -> bool:
+        return self._registry is not None and len(self._registry) > 0
 
     def _should_use_text_mode(self) -> bool:
         if self._text_mode is not None:
@@ -282,82 +264,63 @@ class ChatPanel(QWidget):
         if not self._provider:
             return True
         base_url = getattr(self._provider, '_base_url', '') or ''
-        if any(name in base_url for name in ['minimax', 'ollama', 'localhost:11434']):
-            return True
-        return False
-
-    def _has_tools(self) -> bool:
-        return self._registry is not None and len(self._registry) > 0
+        return any(s in base_url for s in ['minimax', 'ollama', 'localhost:11434'])
 
     def _call_llm(self):
-        """在后台线程调用 LLM 并处理响应。"""
+        """后台线程：调用 LLM。"""
         try:
             has_tools = self._has_tools()
             if not has_tools:
-                # 没有工具，纯聊天模式
-                self._emit_log("[对话] 纯聊天模式（无工具）")
-                actions, reply_text = self._call_chat_mode()
+                self._emit_log("[对话] 纯聊天（无工具）")
+                actions, reply = self._call_chat_mode()
             elif self._should_use_text_mode():
-                self._emit_log("[对话] 文本模式（工具通过文本描述）")
-                actions, reply_text = self._call_text_mode()
+                self._emit_log("[对话] 文本模式")
+                actions, reply = self._call_text_mode()
             else:
-                self._emit_log("[对话] 工具调用模式")
-                actions, reply_text = self._call_tool_mode()
+                self._emit_log("[对话] 工具模式")
+                actions, reply = self._call_tool_mode()
 
-            self._emit_log(f"[对话] 返回: actions={len(actions)}, text={len(reply_text or '')}字")
+            self._emit_log(f"[对话] 结果: {len(actions)} 个动作, {len(reply or '')} 字")
 
-            # 处理工具调用
             if actions:
                 results = self._execute_actions(actions)
-                # 显示执行结果
                 for action, result in results:
                     if self._dryrun:
-                        self._append_tool_call(action, "[模拟] 未实际执行")
+                        self._append_tool_call(action, "[模拟] 未执行")
                     elif result.success:
                         self._append_tool_call(action, f"成功: {result.output}")
                     else:
                         self._append_tool_call(action, f"失败: {result.error}")
-            elif reply_text:
-                self._append_assistant(reply_text)
+            elif reply:
+                self._append_assistant(reply)
             else:
                 self._append_assistant("(无响应)")
 
         except Exception as e:
-            err_detail = traceback.format_exc()
-            logger.error(f"LLM 调用失败: {e}\n{err_detail}")
+            logger.error(f"LLM error: {traceback.format_exc()}")
             self._emit_log(f"[对话] 异常: {e}")
-            self._append_system(f"LLM 调用失败: {e}")
+            self._append_system(f"调用失败: {e}")
         finally:
-            self._set_status("")
-            # 必须在 GUI 线程恢复控件状态
-            QTimer.singleShot(0, self._on_llm_done)
+            self._sig_status.emit("")
+            self._sig_done.emit()
 
     def _call_chat_mode(self) -> tuple[list[dict], str]:
-        """纯聊天模式，不传工具。"""
-        system = "你是一个智能助手，用简洁的中文回答用户问题。"
-
+        """纯聊天，不传工具。"""
         response = self._provider.chat(
             messages=self._conversation,
-            system=system,
+            system="你是一个智能助手，用简洁的中文回答用户问题。",
             tools=None,
             max_tokens=2048,
         )
-
         reply = response.text or ""
-        self._emit_log(f"[对话] chat_mode 响应: {len(reply)}字")
-
         if reply:
             self._conversation.append({"role": "assistant", "content": reply})
-
         return [], reply
 
     def _call_tool_mode(self) -> tuple[list[dict], str]:
-        """工具调用模式。返回 (actions, reply_text)。"""
+        """工具调用模式（function calling）。"""
         try:
             tools = self._registry.to_claude_tools() if self._registry else []
-            self._emit_log(f"[对话] tool_mode: {len(tools)} 个工具, "
-                           f"{len(self._conversation)} 条消息")
-
             response = self._provider.chat(
                 messages=self._conversation,
                 system=_SYSTEM_PROMPT,
@@ -365,35 +328,24 @@ class ChatPanel(QWidget):
                 max_tokens=2048,
             )
 
-            self._emit_log(f"[对话] 响应: text={len(response.text or '')}字, "
-                           f"tool_calls={len(response.tool_calls)}")
-
-            # 如果工具调用和文本都为空，尝试切换到文本模式
             if not response.text and not response.tool_calls:
-                self._emit_log("[对话] 响应为空，切换文本模式")
                 self._text_mode = True
-                self._conversation.pop()  # 移除刚加的消息
+                self._conversation.pop()
                 return self._call_text_mode()
 
-            actions = []
-            for tc in response.tool_calls:
-                actions.append({
-                    "tool": tc["name"],
-                    "params": tc.get("input", {}),
-                })
+            actions = [{"tool": tc["name"], "params": tc.get("input", {})}
+                       for tc in response.tool_calls]
 
-            # 记录助手回复到对话
-            assistant_content = []
+            # 记录到对话历史
+            content = []
             if response.text:
-                assistant_content.append({"type": "text", "text": response.text})
+                content.append({"type": "text", "text": response.text})
             for tc in response.tool_calls:
-                assistant_content.append({
-                    "type": "tool_use", "id": tc.get("id", ""),
-                    "name": tc["name"], "input": tc.get("input", {}),
-                })
+                content.append({"type": "tool_use", "id": tc.get("id", ""),
+                                "name": tc["name"], "input": tc.get("input", {})})
             self._conversation.append({
                 "role": "assistant",
-                "content": assistant_content if assistant_content else response.text or "",
+                "content": content if content else response.text or "",
             })
 
             if actions and response.text:
@@ -402,13 +354,12 @@ class ChatPanel(QWidget):
             return actions, response.text if not actions else ""
 
         except Exception as e:
-            # function calling 失败，切换到文本模式
-            self._emit_log(f"[对话] 工具模式异常: {e}，切换文本模式")
+            self._emit_log(f"[对话] 工具模式异常: {e}，切文本模式")
             self._text_mode = True
             return self._call_text_mode()
 
     def _call_text_mode(self) -> tuple[list[dict], str]:
-        """文本模式（不支持 function calling 的模型）。"""
+        """文本模式。"""
         tools_desc = []
         if self._registry:
             for t in self._registry.to_claude_tools():
@@ -419,45 +370,27 @@ class ChatPanel(QWidget):
                 tools_desc.append(f"  - {name}({param_list}): {desc}")
 
         system = _SYSTEM_PROMPT + _TEXT_MODE_SUFFIX.format(tools_desc="\n".join(tools_desc))
-
-        # 文本模式用简短对话
         messages = self._conversation[-2:] if len(self._conversation) > 2 else self._conversation
 
-        self._emit_log(f"[对话] text_mode: {len(messages)} 条消息")
-
         response = self._provider.chat(
-            messages=messages,
-            system=system,
-            tools=None,
-            max_tokens=2048,
-        )
-
-        self._emit_log(f"[对话] text_mode 响应: {len(response.text or '')}字")
+            messages=messages, system=system, tools=None, max_tokens=2048)
 
         if not response.text:
             return [], ""
 
-        # 尝试解析 JSON 格式的工具调用
         actions, thinking = self._parse_text_response(response.text)
-
-        # 记录到对话
         self._conversation.append({"role": "assistant", "content": response.text})
 
         if actions:
             if thinking:
                 self._append_assistant(thinking)
             return actions, ""
-        else:
-            return [], response.text
+        return [], response.text
 
     def _parse_text_response(self, text: str) -> tuple[list[dict], str]:
-        """从文本响应解析工具调用 JSON。"""
         json_str = text.strip()
-
-        # 去除 markdown 代码块
         if "```json" in json_str:
-            json_str = json_str.split("```json", 1)[1]
-            json_str = json_str.split("```", 1)[0]
+            json_str = json_str.split("```json", 1)[1].split("```", 1)[0]
         elif "```" in json_str:
             parts = json_str.split("```")
             if len(parts) >= 3:
@@ -466,11 +399,10 @@ class ChatPanel(QWidget):
         try:
             data = json.loads(json_str.strip())
         except json.JSONDecodeError:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
+            s, e = text.find("{"), text.rfind("}") + 1
+            if s >= 0 and e > s:
                 try:
-                    data = json.loads(text[start:end])
+                    data = json.loads(text[s:e])
                 except json.JSONDecodeError:
                     return [], ""
             else:
@@ -480,82 +412,58 @@ class ChatPanel(QWidget):
             return [], ""
 
         thinking = data.get("thinking", "")
-        actions = []
-        for item in data.get("actions", []):
-            tool_name = item.get("tool", "")
-            params = item.get("params", {})
-            if tool_name:
-                actions.append({"tool": tool_name, "params": params})
-
+        actions = [{"tool": i.get("tool", ""), "params": i.get("params", {})}
+                   for i in data.get("actions", []) if i.get("tool")]
         return actions, thinking
 
     def _execute_actions(self, actions: list[dict]) -> list[tuple[dict, ToolResult]]:
-        """执行工具调用列表。"""
         results = []
         for action in actions:
-            tool_name = action["tool"]
-            params = action["params"]
-
             if self._dryrun:
                 results.append((action, ToolResult(success=True, output={"dryrun": True})))
-                continue
-
-            if not self._registry:
-                results.append((action, ToolResult(success=False, error="工具注册表未初始化")))
-                continue
-
-            try:
-                result = self._registry.execute(tool_name, **params)
-                results.append((action, result))
-            except Exception as e:
-                results.append((action, ToolResult(success=False, error=str(e))))
-
+            elif not self._registry:
+                results.append((action, ToolResult(success=False, error="工具未初始化")))
+            else:
+                try:
+                    result = self._registry.execute(action["tool"], **action["params"])
+                    results.append((action, result))
+                except Exception as e:
+                    results.append((action, ToolResult(success=False, error=str(e))))
         return results
 
-    # ── 消息显示 ──
+    # ── 消息显示（全部通过 Signal，线程安全） ──
 
     def _append_user(self, text: str):
-        QTimer.singleShot(0, lambda: self._do_append(
-            f'<div style="margin: 6px 0; text-align: right;">'
-            f'<span style="background-color: #1a3a6e; color: #e8ecf4; '
-            f'padding: 6px 12px; border-radius: 10px; display: inline-block; '
-            f'max-width: 80%; text-align: left;">{_escape(text)}</span>'
-            f'<span style="color: #4a7dff; font-size: 12px;"> 你</span></div>'
-        ))
+        self._sig_append.emit(
+            f'<p style="margin:6px 0;color:#4a7dff;"><b>你:</b> {_esc(text)}</p>')
 
     def _append_assistant(self, text: str):
-        QTimer.singleShot(0, lambda: self._do_append(
-            f'<div style="margin: 6px 0;">'
-            f'<span style="color: #2ecc71; font-size: 12px;">AI </span>'
-            f'<span style="background-color: #1a2338; color: #e8ecf4; '
-            f'padding: 6px 12px; border-radius: 10px; display: inline-block; '
-            f'max-width: 80%;">{_escape(text)}</span></div>'
-        ))
+        self._sig_append.emit(
+            f'<p style="margin:6px 0;color:#2ecc71;"><b>AI:</b> '
+            f'<span style="color:#e8ecf4;">{_esc(text)}</span></p>')
 
     def _append_tool_call(self, action: dict, result_text: str):
         tool = action.get("tool", "?")
         params = action.get("params", {})
-        params_str = ", ".join(f'{k}={v}' for k, v in params.items())
-        QTimer.singleShot(0, lambda: self._do_append(
-            f'<div style="margin: 4px 0; padding: 4px 8px; '
-            f'background-color: #151d30; border-left: 3px solid #f39c12; '
-            f'border-radius: 4px; font-family: Consolas, monospace; font-size: 12px;">'
-            f'<span style="color: #f39c12;">[工具]</span> '
-            f'<span style="color: #9b59b6;">{_escape(tool)}</span>'
-            f'(<span style="color: #8892a8;">{_escape(params_str)}</span>)'
-            f'<br/><span style="color: #5a6478;">{_escape(result_text)}</span></div>'
-        ))
+        ps = ", ".join(f'{k}={v}' for k, v in params.items())
+        self._sig_append.emit(
+            f'<p style="margin:3px 0;color:#f39c12;font-size:12px;">'
+            f'[工具] {_esc(tool)}({_esc(ps)}) → '
+            f'<span style="color:#8892a8;">{_esc(result_text)}</span></p>')
 
     def _append_system(self, text: str):
-        QTimer.singleShot(0, lambda: self._do_append(
-            f'<div style="margin: 4px 0; text-align: center; '
-            f'color: #e74c3c; font-size: 12px;">{_escape(text)}</div>'
-        ))
+        self._sig_append.emit(
+            f'<p style="margin:4px 0;color:#e74c3c;font-size:12px;">{_esc(text)}</p>')
 
+    @Slot(str)
     def _do_append(self, html: str):
         self.chat_display.append(html)
-        scrollbar = self.chat_display.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
+        sb = self.chat_display.verticalScrollBar()
+        sb.setValue(sb.maximum())
+
+    @Slot(str)
+    def _do_set_status(self, text: str):
+        self.status_label.setText(text)
 
     @Slot()
     def _on_llm_done(self):
@@ -565,17 +473,12 @@ class ChatPanel(QWidget):
         self.input_edit.setFocus()
 
     def clear_conversation(self):
-        """清空对话历史。"""
         self._conversation.clear()
         self.chat_display.clear()
         self._text_mode = None
         self.status_label.setText("")
 
 
-def _escape(text: str) -> str:
-    """HTML 转义。"""
-    return (text
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br/>"))
+def _esc(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace("\n", "<br/>"))
