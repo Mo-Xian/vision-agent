@@ -4,6 +4,7 @@ import logging
 import time
 from collections import defaultdict
 from ..core.detector import DetectionResult
+from ..core.state import describe_position
 from .base import BaseAgent
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class DemoAgent(BaseAgent):
             if det.class_name == self.track_class:
                 cx = (det.bbox_norm[0] + det.bbox_norm[2]) / 2
                 cy = (det.bbox_norm[1] + det.bbox_norm[3]) / 2
-                position = self._describe_position(cx, cy)
+                position = describe_position(cx, cy)
                 logger.info(
                     f"[Frame {result.frame_id}] 检测到 {self.track_class} "
                     f"@ {position} (置信度: {det.confidence:.2f})"
@@ -59,9 +60,3 @@ class DemoAgent(BaseAgent):
         summary = ", ".join(f"{k}: {v}" for k, v in sorted(self._counts.items()))
         logger.info(f"[统计] 已处理 {self._total_frames} 帧 | 累计检测: {summary}")
 
-    @staticmethod
-    def _describe_position(cx: float, cy: float) -> str:
-        """将归一化坐标转换为方位描述。"""
-        v = "上方" if cy < 0.33 else ("中部" if cy < 0.66 else "下方")
-        h = "左侧" if cx < 0.33 else ("中间" if cx < 0.66 else "右侧")
-        return f"{v}{h}"

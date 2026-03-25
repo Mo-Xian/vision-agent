@@ -7,7 +7,6 @@ from ultralytics import YOLO
 
 class Detection:
     """单个检测结果。"""
-    __slots__ = ("class_id", "class_name", "confidence", "bbox", "bbox_norm")
 
     def __init__(self, class_id: int, class_name: str, confidence: float,
                  bbox: tuple, bbox_norm: tuple):

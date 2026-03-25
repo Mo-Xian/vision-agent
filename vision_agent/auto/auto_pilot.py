@@ -1,14 +1,13 @@
-import logging
 import threading
 from collections import deque
 from pathlib import Path
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from ..decision.base import LoggingMixin
 
 
-class AutoPilot:
+class AutoPilot(LoggingMixin):
     """自动驾驶编排器：场景识别 → Profile 路由 → 自动训练 → 热加载决策。
 
     嵌入到检测流程中，作为 Agent 运行。监控检测结果，
@@ -29,7 +28,7 @@ class AutoPilot:
         self._classifier = scene_classifier
         self._frame_buffer: deque = deque(maxlen=frame_buffer_size)
         self._auto_train_enabled = auto_train_enabled
-        self._on_log = on_log
+        self._on_log = on_log  # LoggingMixin uses this
         self._on_scene_changed = on_scene_changed
         self._on_engine_ready = on_engine_ready
 
@@ -46,7 +45,7 @@ class AutoPilot:
             self._classifier.register_profile(name, profile.scene_keywords)
             if profile.decision_model_dir and Path(profile.decision_model_dir).exists():
                 self._try_load_engine(profile)
-        self._log(f"AutoPilot 启动, {len(self._profile_mgr.list_profiles())} 个 Profile 已注册")
+        self._emit_log(f"AutoPilot 启动, {len(self._profile_mgr.list_profiles())} 个 Profile 已注册")
 
     def stop(self):
         self._running = False
@@ -68,7 +67,7 @@ class AutoPilot:
         if scene != self._current_scene:
             old = self._current_scene
             self._current_scene = scene
-            self._log(f"场景切换: {old} → {scene}")
+            self._emit_log(f"场景切换: {old} → {scene}")
             if self._on_scene_changed:
                 self._on_scene_changed(old, scene)
 
@@ -112,7 +111,7 @@ class AutoPilot:
 
     def _trigger_auto_train(self, profile):
         """在后台线程触发自动训练。"""
-        self._log(f"[自动训练] 触发: {profile.name} (缓冲区 {len(self._frame_buffer)} 帧)")
+        self._emit_log(f"[自动训练] 触发: {profile.name} (缓冲区 {len(self._frame_buffer)} 帧)")
 
         thread = threading.Thread(
             target=self._auto_train_thread,
@@ -132,7 +131,7 @@ class AutoPilot:
 
             frames = list(self._frame_buffer)
             if len(frames) < 30:
-                self._log(f"[自动训练] {profile.name} 帧数不足 ({len(frames)}), 跳过")
+                self._emit_log(f"[自动训练] {profile.name} 帧数不足 ({len(frames)}), 跳过")
                 return
 
             auto_cfg = profile.auto_train
@@ -155,12 +154,12 @@ class AutoPilot:
                 self._try_load_engine(profile)
                 # 持久化到 YAML，重启后不丢失
                 self._save_profile(profile)
-                self._log(f"[自动训练] {profile.name} 完成, 模型已热加载并保存")
+                self._emit_log(f"[自动训练] {profile.name} 完成, 模型已热加载并保存")
             else:
-                self._log(f"[自动训练] {profile.name} 训练失败或数据不足")
+                self._emit_log(f"[自动训练] {profile.name} 训练失败或数据不足")
 
         except Exception as e:
-            self._log(f"[自动训练] {profile.name} 异常: {e}")
+            self._emit_log(f"[自动训练] {profile.name} 异常: {e}")
         finally:
             with self._lock:
                 self._training_in_progress.discard(profile.name)
@@ -179,9 +178,9 @@ class AutoPilot:
                     self._active_engines[profile.name] = engine
                 if self._on_engine_ready:
                     self._on_engine_ready(profile.name, engine)
-                self._log(f"引擎加载: {profile.name} (trained)")
+                self._emit_log(f"引擎加载: {profile.name} (trained)")
         except Exception as e:
-            self._log(f"引擎加载失败: {profile.name} → {e}")
+            self._emit_log(f"引擎加载失败: {profile.name} → {e}")
 
     def _save_profile(self, profile):
         """将 profile 变更写回 YAML 文件。"""
@@ -190,14 +189,7 @@ class AutoPilot:
             profile_dir = self._profile_mgr._dir
             save_path = str(profile_dir / f"{profile.name}.yaml")
             save_profile(profile, save_path)
-            self._log(f"Profile 已保存: {save_path}")
+            self._emit_log(f"Profile 已保存: {save_path}")
         except Exception as e:
-            self._log(f"Profile 保存失败: {e}")
+            self._emit_log(f"Profile 保存失败: {e}")
 
-    def _log(self, msg: str):
-        logger.info(msg)
-        if self._on_log:
-            try:
-                self._on_log(msg)
-            except Exception:
-                pass

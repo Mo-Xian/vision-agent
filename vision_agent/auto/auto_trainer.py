@@ -1,23 +1,15 @@
-import logging
 import time
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from ..decision.base import LoggingMixin
 
 
-class AutoTrainer:
-    """自动训练管线：收集帧 → LLM 标注 → 训练模型 → 返回模型路径。
-
-    整个过程不需要人工干预，用于 AutoPilot 检测到新场景时自动触发。
-    """
+class AutoTrainer(LoggingMixin):
+    """自动训练管线：收集帧 → LLM 标注 → 训练模型 → 返回模型路径。"""
 
     def __init__(self, output_base_dir: str = "runs/auto"):
         self._output_base_dir = output_base_dir
-        self._on_log = None
         self._stop_flag = False
-
-    def set_log_callback(self, callback):
-        self._on_log = callback
 
     def stop(self):
         self._stop_flag = True
@@ -52,7 +44,7 @@ class AutoTrainer:
         result = {"model_dir": "", "phases": []}
 
         # Phase 1: LLM 自动标注
-        self._log(f"[Phase 1/2] LLM 自动标注开始 (目标 {sample_count} 帧)")
+        self._emit_log(f"[Phase 1/2] LLM 自动标注开始 (目标 {sample_count} 帧)")
         if progress_callback:
             progress_callback("annotating", 0.0)
 
@@ -89,17 +81,17 @@ class AutoTrainer:
         stats = annotator.run(save_path=annotate_path)
         result["annotated_count"] = stats["annotated"]
         result["phases"].append({"phase": "annotate", "stats": stats})
-        self._log(f"[Phase 1/2] 标注完成: {stats['annotated']} 条")
+        self._emit_log(f"[Phase 1/2] 标注完成: {stats['annotated']} 条")
 
         if stats["annotated"] < 10:
-            self._log("[终止] 标注数据太少 (<10)，无法训练")
+            self._emit_log("[终止] 标注数据太少 (<10)，无法训练")
             return result
 
         if self._stop_flag:
             return result
 
         # Phase 2: 训练决策模型
-        self._log(f"[Phase 2/2] 训练决策模型 ({model_type})")
+        self._emit_log(f"[Phase 2/2] 训练决策模型 ({model_type})")
         if progress_callback:
             progress_callback("training", 0.0)
 
@@ -117,13 +109,13 @@ class AutoTrainer:
             ),
         )
 
-        self._log(f"开始训练...")
+        self._emit_log(f"开始训练...")
         metrics = trainer.run()
 
         result["model_dir"] = model_dir
         result["accuracy"] = metrics.get("best_val_acc", 0)
         result["phases"].append({"phase": "train", "metrics": metrics})
-        self._log(f"[Phase 2/2] 训练完成: accuracy={result['accuracy']:.3f} → {model_dir}")
+        self._emit_log(f"[Phase 2/2] 训练完成: accuracy={result['accuracy']:.3f} → {model_dir}")
 
         if progress_callback:
             progress_callback("done", 1.0)
@@ -153,7 +145,7 @@ class AutoTrainer:
         import cv2
 
         if not frames:
-            self._log("[终止] 帧缓冲区为空")
+            self._emit_log("[终止] 帧缓冲区为空")
             return {"model_dir": "", "phases": []}
 
         h, w = frames[0].shape[:2]
@@ -166,7 +158,7 @@ class AutoTrainer:
             writer.write(f)
         writer.release()
 
-        self._log(f"帧缓冲区写入临时视频: {len(frames)} 帧 → {tmp_video}")
+        self._emit_log(f"帧缓冲区写入临时视频: {len(frames)} 帧 → {tmp_video}")
 
         return self.train_from_video(
             video_path=tmp_video,
@@ -186,10 +178,3 @@ class AutoTrainer:
             progress_callback=progress_callback,
         )
 
-    def _log(self, msg: str):
-        logger.info(msg)
-        if self._on_log:
-            try:
-                self._on_log(msg)
-            except Exception:
-                pass

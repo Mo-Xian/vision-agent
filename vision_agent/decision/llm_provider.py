@@ -266,50 +266,46 @@ class OpenAIProvider(LLMProvider):
         return str(content)
 
 
-# 供应商注册表
-PROVIDERS = {
-    "claude": ClaudeProvider,
-    "openai": OpenAIProvider,
-    "deepseek": OpenAIProvider,     # DeepSeek 用 OpenAI 兼容接口
-    "qwen": OpenAIProvider,         # 通义千问用 OpenAI 兼容接口
-    "minimax": OpenAIProvider,      # MiniMax 用 OpenAI 兼容接口
-    "ollama": OpenAIProvider,       # 本地 Ollama 用 OpenAI 兼容接口
-    "custom": OpenAIProvider,       # 任意 OpenAI 兼容接口
-}
-
-# 预设的默认配置
+# 预设配置（供 GUI 填充下拉框和自动填入 base_url）
 PROVIDER_PRESETS = {
     "claude": {
+        "class": ClaudeProvider,
         "models": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001", "claude-opus-4-20250514"],
         "base_url": "",
         "api_key_env": "ANTHROPIC_API_KEY",
     },
     "openai": {
+        "class": OpenAIProvider,
         "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1-mini"],
         "base_url": "",
         "api_key_env": "OPENAI_API_KEY",
     },
     "deepseek": {
+        "class": OpenAIProvider,
         "models": ["deepseek-chat", "deepseek-reasoner"],
         "base_url": "https://api.deepseek.com/v1",
         "api_key_env": "DEEPSEEK_API_KEY",
     },
     "qwen": {
+        "class": OpenAIProvider,
         "models": ["qwen-plus", "qwen-turbo", "qwen-max"],
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key_env": "QWEN_API_KEY",
     },
     "minimax": {
+        "class": OpenAIProvider,
         "models": ["MiniMax-Text-01", "abab6.5s-chat", "abab5.5-chat"],
         "base_url": "https://api.minimax.chat/v1",
         "api_key_env": "MINIMAX_API_KEY",
     },
     "ollama": {
+        "class": OpenAIProvider,
         "models": ["llama3", "qwen2", "mistral"],
         "base_url": "http://localhost:11434/v1",
         "api_key_env": "",
     },
     "custom": {
+        "class": OpenAIProvider,
         "models": [],
         "base_url": "",
         "api_key_env": "",
@@ -320,15 +316,16 @@ PROVIDER_PRESETS = {
 def create_provider(provider_name: str, api_key: str, model: str,
                     base_url: str = "") -> LLMProvider:
     """工厂方法：创建 LLM Provider 实例。"""
-    cls = PROVIDERS.get(provider_name)
-    if cls is None:
-        raise ValueError(f"未知供应商: {provider_name}，可用: {list(PROVIDERS.keys())}")
+    preset = PROVIDER_PRESETS.get(provider_name)
+    if preset is None:
+        raise ValueError(f"未知供应商: {provider_name}，可用: {list(PROVIDER_PRESETS.keys())}")
 
+    cls = preset["class"]
     kwargs = {"api_key": api_key, "model": model}
     if base_url:
         kwargs["base_url"] = base_url
-    elif provider_name in PROVIDER_PRESETS:
-        preset_url = PROVIDER_PRESETS[provider_name].get("base_url", "")
+    else:
+        preset_url = preset.get("base_url", "")
         if preset_url:
             kwargs["base_url"] = preset_url
 

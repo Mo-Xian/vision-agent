@@ -5,14 +5,14 @@ import threading
 import time
 from ..core.detector import DetectionResult
 from ..core.state import StateManager, SceneState
-from ..decision.base import DecisionEngine, Action
+from ..decision.base import DecisionEngine, Action, LoggingMixin
 from ..tools.base import ToolRegistry, ToolResult
 from .base import BaseAgent
 
 logger = logging.getLogger(__name__)
 
 
-class ActionAgent(BaseAgent):
+class ActionAgent(LoggingMixin, BaseAgent):
     """智能 Agent：感知 → 决策 → 执行 全链路。
 
     决策在独立线程中异步执行，不阻塞主检测循环。
@@ -90,14 +90,6 @@ class ActionAgent(BaseAgent):
             except Exception as e:
                 self._stats["actions_failed"] += 1
                 self._emit_log(f"[异常] {action.tool_name} -> {e}")
-
-    def _emit_log(self, msg: str):
-        logger.info(msg)
-        if self._on_log:
-            try:
-                self._on_log(msg)
-            except Exception:
-                pass
 
     @property
     def stats(self) -> dict:

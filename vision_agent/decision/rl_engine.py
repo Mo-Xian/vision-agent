@@ -5,11 +5,12 @@ import random
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass
-from .base import DecisionEngine, Action
+from .base import DecisionEngine, Action, LoggingMixin
 from ..core.detector import DetectionResult
 from ..core.state import SceneState
 
 logger = logging.getLogger(__name__)
+
 
 
 @dataclass
@@ -76,7 +77,7 @@ class RewardDetector:
         self._prev_counts = {}
 
 
-class RLEngine(DecisionEngine):
+class RLEngine(LoggingMixin, DecisionEngine):
     """基于 DQN 的强化学习决策引擎。
 
     支持两种模式：
@@ -128,13 +129,9 @@ class RLEngine(DecisionEngine):
         self._prev_action_idx: int | None = None
         self._total_reward: float = 0
         self._episode_rewards: list[float] = []
-        self._on_log = None
 
         if model_path and Path(model_path).exists():
             self._load_model(model_path)
-
-    def set_log_callback(self, callback):
-        self._on_log = callback
 
     def decide(self, result: DetectionResult, state: SceneState) -> list[Action]:
         # 提取状态特征
@@ -167,7 +164,7 @@ class RLEngine(DecisionEngine):
             self._step_count += 1
             if self._step_count % self._save_interval == 0:
                 self._save_model()
-                self._log(
+                self._emit_log(
                     f"[RL] step={self._step_count} epsilon={self._epsilon:.3f} "
                     f"reward={self._total_reward:.1f} memory={len(self._memory)}"
                 )
@@ -223,7 +220,7 @@ class RLEngine(DecisionEngine):
         )
         self._optimizer = torch.optim.Adam(self._model.parameters(), lr=self._lr)
         self._loss_fn = nn.MSELoss()
-        self._log(f"[RL] DQN 初始化: state_dim={self._state_dim} actions={self._n_actions}")
+        self._emit_log(f"[RL] DQN 初始化: state_dim={self._state_dim} actions={self._n_actions}")
 
     def _train_step(self):
         """从经验池采样训练一步。"""
@@ -308,7 +305,7 @@ class RLEngine(DecisionEngine):
         self._step_count = data.get("step_count", 0)
         self._init_model()
         self._model.load_state_dict(data["model"])
-        self._log(f"[RL] 模型加载: {path} (step={self._step_count})")
+        self._emit_log(f"[RL] 模型加载: {path} (step={self._step_count})")
 
     def on_start(self):
         self._reward_detector.reset()
@@ -316,18 +313,10 @@ class RLEngine(DecisionEngine):
     def on_stop(self):
         if self._training and self._model:
             self._save_model()
-            self._log(f"[RL] 训练结束, 模型已保存 (steps={self._step_count})")
+            self._emit_log(f"[RL] 训练结束, 模型已保存 (steps={self._step_count})")
 
     def configure(self, **kwargs):
         if "training" in kwargs:
             self._training = kwargs["training"]
         if "epsilon" in kwargs:
             self._epsilon = kwargs["epsilon"]
-
-    def _log(self, msg: str):
-        logger.info(msg)
-        if self._on_log:
-            try:
-                self._on_log(msg)
-            except Exception:
-                pass

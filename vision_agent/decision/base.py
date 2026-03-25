@@ -1,5 +1,6 @@
 """决策引擎基类和动作数据结构。"""
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from ..core.detector import DetectionResult
@@ -23,6 +24,23 @@ class Action:
             "priority": self.priority,
             "confidence": self.confidence,
         }
+
+
+class LoggingMixin:
+    """统一的日志回调 mixin，消除各模块重复的 _emit_log/_log 实现。"""
+
+    _on_log: "callable | None" = None
+
+    def set_log_callback(self, callback) -> None:
+        self._on_log = callback
+
+    def _emit_log(self, msg: str):
+        logging.getLogger(type(self).__module__).info(msg)
+        if self._on_log:
+            try:
+                self._on_log(msg)
+            except Exception:
+                pass
 
 
 class DecisionEngine(ABC):

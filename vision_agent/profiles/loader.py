@@ -30,7 +30,6 @@ def load_profile(path: str) -> "SceneProfile":
         roi_regions=roi_tuples,
         scene_keywords=data.get("scene_keywords", []),
         auto_train=data.get("auto_train", {}),
-        extra=data.get("extra", {}),
     )
 
 

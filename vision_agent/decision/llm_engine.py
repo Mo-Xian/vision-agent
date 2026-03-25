@@ -5,16 +5,13 @@ import logging
 import time
 from ..core.detector import DetectionResult
 from ..core.state import SceneState
-from .base import Action, DecisionEngine
+from .base import Action, DecisionEngine, LoggingMixin
 from .llm_provider import LLMProvider, create_provider
 
 logger = logging.getLogger(__name__)
 
-# 不支持 function calling 的供应商/模型，直接用文本模式
-_TEXT_ONLY_PROVIDERS = {"minimax", "ollama"}
 
-
-class LLMEngine(DecisionEngine):
+class LLMEngine(LoggingMixin, DecisionEngine):
     """LLM 决策引擎，通过 Provider 抽象层支持 Claude / OpenAI / 兼容 API。"""
 
     def __init__(
@@ -49,7 +46,6 @@ class LLMEngine(DecisionEngine):
         self._last_call_time = 0.0
         self._conversation: list[dict] = []
         self._max_history = 10
-        self._on_log: callable | None = None
         # 是否使用文本模式（不支持 function calling 的供应商）
         self._text_mode: bool | None = None  # None=自动检测
 
@@ -75,17 +71,6 @@ class LLMEngine(DecisionEngine):
 
     def set_tools_schema(self, tools_schema: list[dict]) -> None:
         self._tools_schema = tools_schema
-
-    def set_log_callback(self, callback) -> None:
-        self._on_log = callback
-
-    def _emit_log(self, msg: str):
-        logger.info(msg)
-        if self._on_log:
-            try:
-                self._on_log(msg)
-            except Exception:
-                pass
 
     def configure(self, **kwargs) -> None:
         if "system_prompt" in kwargs:

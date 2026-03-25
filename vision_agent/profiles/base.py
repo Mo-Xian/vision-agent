@@ -17,7 +17,6 @@ class SceneProfile:
     roi_regions: dict[str, tuple] = field(default_factory=dict)
     scene_keywords: list[str] = field(default_factory=list)
     auto_train: dict = field(default_factory=dict)
-    extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -32,7 +31,6 @@ class SceneProfile:
             "roi_regions": {k: list(v) for k, v in self.roi_regions.items()},
             "scene_keywords": self.scene_keywords,
             "auto_train": self.auto_train,
-            "extra": self.extra,
         }
 
 
@@ -57,18 +55,6 @@ class ProfileManager:
         if not self._profiles:
             self.load_all()
         return self._profiles.get(name)
-
-    def match_scene(self, detected_classes: set[str]) -> SceneProfile | None:
-        if not self._profiles:
-            self.load_all()
-        best, best_score = None, 0
-        for profile in self._profiles.values():
-            if not profile.scene_keywords:
-                continue
-            score = len(detected_classes & set(profile.scene_keywords))
-            if score > best_score:
-                best, best_score = profile, score
-        return best
 
     def list_profiles(self) -> list[str]:
         if not self._profiles:
