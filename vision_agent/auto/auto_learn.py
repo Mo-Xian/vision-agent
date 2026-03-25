@@ -35,6 +35,7 @@ class AutoLearn(LoggingMixin):
         output_dir: str = "runs/auto_learn",
         on_log=None,
         on_progress=None,
+        bilibili_cookie: str = "",
     ):
         self._llm_provider_name = llm_provider_name
         self._llm_api_key = llm_api_key
@@ -44,6 +45,7 @@ class AutoLearn(LoggingMixin):
         self._output_dir = Path(output_dir)
         self._on_log = on_log
         self._on_progress = on_progress
+        self._bilibili_cookie = bilibili_cookie
         self._stop = False
 
         self._provider = None
@@ -116,6 +118,7 @@ class AutoLearn(LoggingMixin):
                 llm_provider=provider,
                 output_dir=str(run_dir / "fetched"),
                 on_log=self._on_log,
+                bilibili_cookie=self._bilibili_cookie,
             )
             plan = fetcher.plan_search(interest, resource_type)
             result["phases"]["plan"] = plan

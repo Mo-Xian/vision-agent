@@ -71,6 +71,12 @@ class AutoLearnDialog(QDialog):
         self.llm_base_url.setPlaceholderText("自定义 Base URL（可选）")
         config_layout.addRow("Base URL", self.llm_base_url)
 
+        # B站Cookie
+        self.bilibili_cookie = QLineEdit()
+        self.bilibili_cookie.setPlaceholderText("B站Cookie（可选，提高下载成功率；或设置环境变量 BILIBILI_COOKIE）")
+        self.bilibili_cookie.setEchoMode(QLineEdit.Password)
+        config_layout.addRow("B站Cookie", self.bilibili_cookie)
+
         # 资源
         res_row = QHBoxLayout()
         self.resource_type = QComboBox()
@@ -248,6 +254,7 @@ class AutoLearnDialog(QDialog):
             yolo_model=self.yolo_model.currentText(),
             on_log=lambda msg: self.log_signal.emit(msg),
             on_progress=lambda phase, pct: self.progress_signal.emit(phase, pct),
+            bilibili_cookie=self.bilibili_cookie.text().strip(),
         )
 
         kwargs = {
