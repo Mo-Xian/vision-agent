@@ -93,12 +93,18 @@ class AutoLearnDialog(QDialog):
         self.skip_fetch = QCheckBox("使用本地视频（跳过下载）")
         local_row.addWidget(self.skip_fetch)
         self.local_videos = QLineEdit()
-        self.local_videos.setPlaceholderText("本地视频路径，多个用分号分隔")
+        self.local_videos.setPlaceholderText("本地视频路径或文件夹，多个用分号分隔")
         local_row.addWidget(self.local_videos)
-        browse_btn = QPushButton("...")
-        browse_btn.setMaximumWidth(32)
+        browse_btn = QPushButton("文件")
+        browse_btn.setMaximumWidth(40)
+        browse_btn.setToolTip("选择视频文件")
         browse_btn.clicked.connect(self._browse_videos)
         local_row.addWidget(browse_btn)
+        browse_dir_btn = QPushButton("文件夹")
+        browse_dir_btn.setMaximumWidth(50)
+        browse_dir_btn.setToolTip("选择文件夹（自动扫描其中的视频文件）")
+        browse_dir_btn.clicked.connect(self._browse_video_dir)
+        local_row.addWidget(browse_dir_btn)
         config_layout.addRow("", local_row)
 
         # 训练参数
@@ -154,14 +160,42 @@ class AutoLearnDialog(QDialog):
 
         layout.addLayout(btn_layout)
 
+    _VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".ts", ".m4v"}
+
     def _browse_videos(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "选择视频文件", "",
-            "视频文件 (*.mp4 *.avi *.mkv *.mov *.webm);;所有文件 (*)"
+            "视频文件 (*.mp4 *.avi *.mkv *.mov *.webm *.flv *.ts *.m4v);;所有文件 (*)"
         )
         if files:
             self.local_videos.setText(";".join(files))
             self.skip_fetch.setChecked(True)
+
+    def _browse_video_dir(self):
+        folder = QFileDialog.getExistingDirectory(self, "选择视频文件夹")
+        if folder:
+            # 直接填入文件夹路径，启动时再扫描
+            existing = self.local_videos.text().strip()
+            if existing:
+                self.local_videos.setText(existing + ";" + folder)
+            else:
+                self.local_videos.setText(folder)
+            self.skip_fetch.setChecked(True)
+
+    @staticmethod
+    def _expand_paths(paths: list[str]) -> list[str]:
+        """展开路径列表：文件夹自动扫描其中的视频文件，普通文件直接保留。"""
+        from pathlib import Path
+        result = []
+        for p in paths:
+            pp = Path(p)
+            if pp.is_dir():
+                for f in sorted(pp.iterdir()):
+                    if f.is_file() and f.suffix.lower() in AutoLearnDialog._VIDEO_EXTS:
+                        result.append(str(f))
+            elif pp.is_file():
+                result.append(str(pp))
+        return result
 
     def _start(self):
         interest = self.interest_edit.text().strip()
@@ -191,12 +225,18 @@ class AutoLearnDialog(QDialog):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("%p% - 启动中...")
 
-        # 获取本地视频列表
+        # 获取本地视频列表（支持文件和文件夹混合输入）
         video_paths = None
         if self.skip_fetch.isChecked():
             paths_text = self.local_videos.text().strip()
             if paths_text:
-                video_paths = [p.strip() for p in paths_text.split(";") if p.strip()]
+                raw_paths = [p.strip() for p in paths_text.split(";") if p.strip()]
+                video_paths = self._expand_paths(raw_paths)
+                if not video_paths:
+                    QMessageBox.warning(self, "提示", "指定的路径中未找到视频文件")
+                    self.start_btn.setEnabled(True)
+                    self.stop_btn.setEnabled(False)
+                    return
 
         from ..auto.auto_learn import AutoLearn
 
