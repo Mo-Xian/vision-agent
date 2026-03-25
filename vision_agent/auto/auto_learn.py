@@ -144,6 +144,7 @@ class AutoLearn(LoggingMixin):
                     interest, resource_type, max_results=max_resources,
                     source=source,
                     progress_callback=lambda p, pct: self._progress("fetch", 0.1 + pct * 0.15),
+                    plan=plan,
                 )
                 local_files = fetch_result.get("local_files", [])
                 result["phases"]["fetch"] = {
@@ -196,7 +197,7 @@ class AutoLearn(LoggingMixin):
                     actions=actions,
                     action_descriptions=action_descriptions,
                     sample_interval=30,
-                    max_frames=sample_count // len(video_files),
+                    max_frames=max(sample_count // len(video_files), 1),
                     use_tool_calling=True,
                     progress_callback=lambda cur, total, ann: self._progress(
                         "annotate", 0.25 + 0.25 * ((i + cur / max(total, 1)) / len(video_files))
@@ -344,8 +345,9 @@ class AutoLearn(LoggingMixin):
                     break
 
                 # 每 5 帧处理一次
-                if step % 5 != 0:
-                    step += 1
+                frame_counter = getattr(self, '_rl_frame_counter', 0)
+                self._rl_frame_counter = frame_counter + 1
+                if frame_counter % 5 != 0:
                     continue
 
                 result = detector.detect(frame)

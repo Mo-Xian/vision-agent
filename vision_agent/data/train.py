@@ -288,7 +288,7 @@ class DecisionTrainer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         if self.model_type == "mlp":
-            metrics = self._train_mlp(X_train, y_train, X_val, y_val)
+            metrics = self._train_mlp(X_train, y_train, X_val, y_val, len(action_map))
         elif self.model_type == "rf":
             metrics = self._train_random_forest(X_train, y_train, X_val, y_val)
         else:
@@ -340,10 +340,11 @@ class DecisionTrainer:
 
         return X[train_idx], X[val_idx], y[train_idx], y[val_idx]
 
-    def _train_mlp(self, X_train, y_train, X_val, y_val) -> dict:
+    def _train_mlp(self, X_train, y_train, X_val, y_val, num_classes: int = 0) -> dict:
         """训练 PyTorch MLP。"""
         input_dim = X_train.shape[1]
-        num_classes = len(set(y_train.tolist()) | set(y_val.tolist()))
+        if num_classes <= 0:
+            num_classes = int(max(y_train.max(), y_val.max())) + 1
 
         model = ActionMLP(
             input_dim=input_dim,

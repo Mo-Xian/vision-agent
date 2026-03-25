@@ -50,6 +50,11 @@ class DetectionWorker(QThread):
             while self._running:
                 frame = self.source.read()
                 if frame is None:
+                    # 流源启动初期可能还没拉到帧，等待重试
+                    from ..sources.stream import StreamSource
+                    if isinstance(self.source, StreamSource):
+                        time.sleep(0.05)
+                        continue
                     self.error.emit("视频源已结束")
                     break
 

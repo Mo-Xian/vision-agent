@@ -251,6 +251,8 @@ class StreamSource(BaseSource):
                 new_url = self._resolve_url()
                 if new_url:
                     self._stream_url = new_url
+                else:
+                    self._log("B站直播流地址重新解析失败，使用上次的地址重试")
 
             if self._open_capture():
                 return True

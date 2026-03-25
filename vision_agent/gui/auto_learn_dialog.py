@@ -313,8 +313,11 @@ class AutoLearnDialog(QDialog):
     def _on_done(self, result: dict):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self.progress_bar.setValue(100)
-        self.progress_bar.setFormat("100% - 完成")
+        if result.get("model_dir"):
+            self.progress_bar.setValue(100)
+            self.progress_bar.setFormat("100% - 完成")
+        else:
+            self.progress_bar.setFormat("%p% - 失败或中止")
 
         if result.get("model_dir"):
             QMessageBox.information(

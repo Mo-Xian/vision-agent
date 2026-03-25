@@ -1527,8 +1527,9 @@ class MainWindow(QMainWindow):
         self._worker = None
 
     def _decision_log_callback(self, msg):
-        if self._worker:
-            self._worker.decision_log.emit(msg)
+        w = self._worker
+        if w:
+            w.decision_log.emit(msg)
 
     @Slot(str)
     def _on_decision_log(self, msg):

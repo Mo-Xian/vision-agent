@@ -475,6 +475,18 @@ class ResourceFetcher:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 path = ydl.prepare_filename(info)
+                # prepare_filename 可能不匹配后处理后的实际文件名
+                if not Path(path).exists():
+                    # 尝试查找同名但不同扩展名的文件（merge_output_format 可能改变扩展名）
+                    stem = Path(path).stem
+                    parent = Path(path).parent
+                    candidates = [f for f in parent.iterdir()
+                                  if f.stem == stem and f.suffix.lower() in _VIDEO_EXTS]
+                    if candidates:
+                        path = str(candidates[0])
+                    else:
+                        self._log(f"[警告] 下载文件未找到: {path}")
+                        return None
                 self._log(f"下载完成: {Path(path).name}")
                 return path
         except Exception as e:
@@ -565,7 +577,7 @@ class ResourceFetcher:
 
     def fetch(self, interest: str, resource_type: str = "video",
               max_results: int = 5, source: str = "bilibili",
-              progress_callback=None) -> dict:
+              progress_callback=None, plan: dict | None = None) -> dict:
         """完整的搜索+下载流程。
 
         Args:
@@ -574,6 +586,7 @@ class ResourceFetcher:
             max_results: 每个关键词的最大搜索结果数
             source: 视频源 "bilibili" / "url" / "ytdlp"
             progress_callback: (phase, pct) 回调
+            plan: 已有的搜索规划（避免重复调用 LLM）
         """
         self._stop = False
         self._output_dir.mkdir(parents=True, exist_ok=True)
@@ -584,9 +597,10 @@ class ResourceFetcher:
             for rec in env["recommendations"]:
                 self._log(f"[环境提示] {rec}")
 
-        # 1. LLM 规划
-        self._log("Step 1/3: LLM 规划搜索策略...")
-        plan = self.plan_search(interest, resource_type)
+        # 1. LLM 规划（如果外部已传入 plan 则跳过）
+        if plan is None:
+            self._log("Step 1/3: LLM 规划搜索策略...")
+            plan = self.plan_search(interest, resource_type)
         self._log(f"搜索关键词: {plan['keywords']}")
         self._log(f"建议动作: {plan['suggested_actions']}")
         if progress_callback:

@@ -107,7 +107,8 @@ class TrainedEngine(DecisionEngine):
 
     def decide(self, result: DetectionResult, state: SceneState) -> list[Action]:
         features = self._extract_features(result, state)
-        features_norm = (features - self._feature_mean) / self._feature_std
+        safe_std = np.where(self._feature_std == 0, 1.0, self._feature_std)
+        features_norm = (features - self._feature_mean) / safe_std
 
         if self._model_type == "mlp":
             proba = self._model.predict_proba(features_norm.reshape(1, -1))[0]
