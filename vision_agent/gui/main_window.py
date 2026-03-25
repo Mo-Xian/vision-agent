@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         ap.profile_refresh_btn.clicked.connect(self._refresh_agent_profiles)
         ap.currentChanged.connect(self._on_agent_tab_changed)
         ap.chat_panel._try_auto_init = self._init_chat_provider
+        ap.chat_panel.set_log_callback(self._log)
 
         # 初始化可见性
         self._on_source_type_changed("video")

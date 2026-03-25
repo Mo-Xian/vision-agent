@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import threading
+import traceback
 
 import cv2
 import numpy as np
@@ -11,7 +12,7 @@ from PySide6.QtCore import Signal, Slot, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
-    QPushButton, QCheckBox,
+    QPushButton, QCheckBox, QLabel,
 )
 
 from ..decision.llm_provider import LLMProvider
@@ -28,7 +29,8 @@ _SYSTEM_PROMPT = """\
 2. 如果用户的指令不够明确，先回复文字确认，再执行
 3. 可以一次调用多个工具来完成复合操作
 4. 执行完后简短汇报结果
-5. 如果有截图附带，结合截图内容理解用户需求"""
+5. 如果有截图附带，结合截图内容理解用户需求
+6. 如果用户只是在聊天（不需要操作键盘鼠标），直接用文字回复即可，不要调用工具"""
 
 # 文本模式提示词（不支持 function calling 时）
 _TEXT_MODE_SUFFIX = """
@@ -65,6 +67,7 @@ class ChatPanel(QWidget):
         self._dryrun = False
         self._text_mode: bool | None = None
         self._try_auto_init: "callable | None" = None  # 由父窗口设置
+        self._log_callback = None  # 外部日志回调
 
         self._init_ui()
 
@@ -82,6 +85,11 @@ class ChatPanel(QWidget):
             "padding: 6px; background-color: #0f1525; }"
         )
         layout.addWidget(self.chat_display, 1)
+
+        # 状态行
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #8892a8; font-size: 11px; padding: 0 4px;")
+        layout.addWidget(self.status_label)
 
         # 选项行
         opts_row = QHBoxLayout()
@@ -113,7 +121,7 @@ class ChatPanel(QWidget):
 
         self.input_edit = QLineEdit()
         self.input_edit.setFont(QFont("Microsoft YaHei", 11))
-        self.input_edit.setPlaceholderText("输入指令，如：点击屏幕中间、按下 Ctrl+C、把鼠标移到右上角...")
+        self.input_edit.setPlaceholderText("输入指令，如：点击屏幕中间、按下 Ctrl+C ...")
         self.input_edit.returnPressed.connect(self._on_send)
         self.input_edit.setStyleSheet(
             "QLineEdit { border: 1px solid #253352; border-radius: 6px; "
@@ -141,10 +149,18 @@ class ChatPanel(QWidget):
         """设置 LLM Provider。"""
         self._provider = provider
         self._text_mode = None
+        if provider:
+            self._emit_log(f"[对话] Provider 已设置: {provider.provider_name}")
 
     def set_tool_registry(self, registry: ToolRegistry | None):
         """设置工具注册表。"""
         self._registry = registry
+        if registry:
+            self._emit_log(f"[对话] 工具已注册: {len(registry)} 个")
+
+    def set_log_callback(self, callback):
+        """设置外部日志回调。"""
+        self._log_callback = callback
 
     def update_frame(self, frame: np.ndarray):
         """更新当前画面帧（供截图附带用）。"""
@@ -153,6 +169,17 @@ class ChatPanel(QWidget):
     def _on_dryrun_changed(self, checked: bool):
         self._dryrun = checked
 
+    def _emit_log(self, msg: str):
+        logger.info(msg)
+        if self._log_callback:
+            try:
+                self._log_callback(msg)
+            except Exception:
+                pass
+
+    def _set_status(self, text: str):
+        QTimer.singleShot(0, lambda: self.status_label.setText(text))
+
     # ── 对话逻辑 ──
 
     def _on_send(self):
@@ -160,20 +187,31 @@ class ChatPanel(QWidget):
         if not text or self._working:
             return
 
+        # 检查 Provider
         if not self._provider:
-            # 尝试通知父窗口初始化
-            if self._try_auto_init and self._try_auto_init():
-                pass  # 初始化成功
+            self._emit_log("[对话] Provider 为空，尝试自动初始化")
+            if self._try_auto_init:
+                ok = self._try_auto_init()
+                self._emit_log(f"[对话] 自动初始化结果: {ok}")
+                if not ok:
+                    self._append_system("LLM 未配置。请先在 LLM 页面设置供应商和 API Key。")
+                    return
             else:
-                self._append_system("LLM 未配置。请先在训练工坊中设置 LLM 供应商和 API Key。")
+                self._append_system("LLM 未配置。请先在 LLM 页面设置供应商和 API Key。")
                 return
 
+        # 再次检查（auto_init 可能设置了 provider）
+        if not self._provider:
+            self._append_system("LLM Provider 初始化失败，请检查 LLM 配置。")
+            return
+
         if not self._registry or len(self._registry) == 0:
-            self._append_system("工具未注册。请确保已初始化键盘/鼠标工具。")
+            self._append_system("工具未注册。请确保 pynput 已安装。")
             return
 
         self.input_edit.clear()
         self._append_user(text)
+        self._set_status("思考中...")
 
         # 构建消息
         user_content = self._build_user_content(text)
@@ -188,6 +226,7 @@ class ChatPanel(QWidget):
         self.send_btn.setEnabled(False)
         self.input_edit.setEnabled(False)
 
+        self._emit_log(f"[对话] 发送消息: {text[:50]}...")
         thread = threading.Thread(target=self._call_llm, daemon=True)
         thread.start()
 
@@ -210,8 +249,12 @@ class ChatPanel(QWidget):
             b64 = base64.b64encode(buf).decode("utf-8")
             return [
                 {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": b64,
+                    },
                 },
                 {"type": "text", "text": text},
             ]
@@ -251,11 +294,14 @@ class ChatPanel(QWidget):
         """在后台线程调用 LLM 并处理响应。"""
         try:
             use_text_mode = self._should_use_text_mode()
+            self._emit_log(f"[对话] 调用模式: {'文本' if use_text_mode else '工具'}")
 
             if use_text_mode:
                 actions, reply_text = self._call_text_mode()
             else:
                 actions, reply_text = self._call_tool_mode()
+
+            self._emit_log(f"[对话] 返回: actions={len(actions)}, text={len(reply_text or '')}字")
 
             # 处理工具调用
             if actions:
@@ -274,24 +320,35 @@ class ChatPanel(QWidget):
                 self._append_assistant("(无响应)")
 
         except Exception as e:
-            logger.error(f"LLM 调用失败: {e}")
+            err_detail = traceback.format_exc()
+            logger.error(f"LLM 调用失败: {e}\n{err_detail}")
+            self._emit_log(f"[对话] 异常: {e}")
             self._append_system(f"LLM 调用失败: {e}")
         finally:
+            self._set_status("")
             # 必须在 GUI 线程恢复控件状态
             QTimer.singleShot(0, self._on_llm_done)
 
     def _call_tool_mode(self) -> tuple[list[dict], str]:
         """工具调用模式。返回 (actions, reply_text)。"""
         try:
+            tools = self._registry.to_claude_tools() if self._registry else []
+            self._emit_log(f"[对话] tool_mode: {len(tools)} 个工具, "
+                           f"{len(self._conversation)} 条消息")
+
             response = self._provider.chat(
                 messages=self._conversation,
                 system=_SYSTEM_PROMPT,
-                tools=self._registry.to_claude_tools() if self._registry else [],
+                tools=tools,
                 max_tokens=2048,
             )
 
+            self._emit_log(f"[对话] 响应: text={len(response.text or '')}字, "
+                           f"tool_calls={len(response.tool_calls)}")
+
             # 如果工具调用和文本都为空，尝试切换到文本模式
             if not response.text and not response.tool_calls:
+                self._emit_log("[对话] 响应为空，切换文本模式")
                 self._text_mode = True
                 self._conversation.pop()  # 移除刚加的消息
                 return self._call_text_mode()
@@ -324,11 +381,8 @@ class ChatPanel(QWidget):
 
         except Exception as e:
             # function calling 失败，切换到文本模式
-            logger.warning(f"工具模式失败，切换文本模式: {e}")
+            self._emit_log(f"[对话] 工具模式异常: {e}，切换文本模式")
             self._text_mode = True
-            if self._conversation and self._conversation[-1].get("role") == "user":
-                msg = self._conversation.pop()
-                self._conversation.append(msg)  # 保留消息
             return self._call_text_mode()
 
     def _call_text_mode(self) -> tuple[list[dict], str]:
@@ -347,12 +401,16 @@ class ChatPanel(QWidget):
         # 文本模式用简短对话
         messages = self._conversation[-2:] if len(self._conversation) > 2 else self._conversation
 
+        self._emit_log(f"[对话] text_mode: {len(messages)} 条消息")
+
         response = self._provider.chat(
             messages=messages,
             system=system,
             tools=None,
             max_tokens=2048,
         )
+
+        self._emit_log(f"[对话] text_mode 响应: {len(response.text or '')}字")
 
         if not response.text:
             return [], ""
@@ -489,6 +547,7 @@ class ChatPanel(QWidget):
         self._conversation.clear()
         self.chat_display.clear()
         self._text_mode = None
+        self.status_label.setText("")
 
 
 def _escape(text: str) -> str:
