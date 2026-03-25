@@ -257,6 +257,7 @@ def main():
             else:
                 agents.append(DemoAgent())
 
+    target_fps = config.get("pipeline", {}).get("target_fps", 0)
     pipeline = Pipeline(
         source=source,
         detector=detector,
@@ -265,6 +266,7 @@ def main():
         agents=agents,
         state_manager=state_manager,
         model_manager=model_manager,
+        target_fps=target_fps,
     )
     pipeline.run()
 

@@ -1,9 +1,10 @@
 """LLM 标注结果可视化回放对话框。
 
-加载 JSONL 标注文件 + 对应视频，逐帧展示：
-- YOLO 检测框
-- LLM 决策动作 + 理由
-- 动作分布统计
+功能：
+- 加载 JSONL 标注文件 + 对应视频，逐帧展示检测框和 LLM 决策
+- 编辑/纠正动作标注，删除坏样本，保存修正后的 JSONL
+- 动作分布统计 + 数据集质量分析
+- 键盘快捷键导航
 """
 
 import json
@@ -12,16 +13,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import Qt, Slot, QTimer
-from PySide6.QtGui import QImage, QPixmap, QColor, QFont, QPainter
+from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QSlider, QFileDialog, QGroupBox, QTextEdit, QSplitter,
-    QWidget, QMessageBox, QLineEdit,
+    QWidget, QMessageBox, QLineEdit, QComboBox,
 )
 
 from .styles import DIALOG_STYLESHEET, COLORS
 
-# 动作→颜色映射（循环使用）
 _ACTION_COLORS = [
     (46, 204, 113),   # 绿
     (231, 76, 60),    # 红
@@ -35,7 +35,7 @@ _ACTION_COLORS = [
 
 
 class AnnotationViewer(QDialog):
-    """标注结果可视化回放。"""
+    """标注结果可视化回放 + 纠错编辑。"""
 
     def __init__(self, parent=None, jsonl_path: str = "", video_path: str = ""):
         super().__init__(parent)
@@ -45,17 +45,24 @@ class AnnotationViewer(QDialog):
         self.setStyleSheet(DIALOG_STYLESHEET)
 
         self._samples: list[dict] = []
+        self._jsonl_path = ""
         self._video_path = ""
         self._cap: cv2.VideoCapture | None = None
         self._fps = 30.0
         self._total_video_frames = 0
         self._current_idx = 0
         self._action_color_map: dict[str, tuple] = {}
+        self._all_actions: list[str] = []
         self._playing = False
+        self._modified = False
+        self._deleted_indices: set[int] = set()
+        self._compare_samples: list[dict] = []  # A/B 对比用
+        self._compare_map: dict[int, str] = {}  # frame_id → compare action
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._on_play_tick)
 
         self._init_ui()
+        self._init_shortcuts()
 
         if jsonl_path:
             self.jsonl_input.setText(jsonl_path)
@@ -92,6 +99,12 @@ class AnnotationViewer(QDialog):
         load_btn.setObjectName("infoBtn")
         load_btn.clicked.connect(self._load_data)
         file_row.addWidget(load_btn)
+
+        compare_btn = QPushButton("对比")
+        compare_btn.setObjectName("purpleBtn")
+        compare_btn.setToolTip("加载第二份标注文件进行 A/B 对比")
+        compare_btn.clicked.connect(self._load_compare)
+        file_row.addWidget(compare_btn)
         layout.addLayout(file_row)
 
         # -- 主体：左视频 + 右信息 --
@@ -144,7 +157,7 @@ class AnnotationViewer(QDialog):
 
         splitter.addWidget(left)
 
-        # 右：决策信息 + 统计
+        # 右：决策信息 + 编辑 + 统计
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -173,20 +186,78 @@ class AnnotationViewer(QDialog):
         dg.addWidget(self.frame_meta_label)
         right_layout.addWidget(decision_group)
 
+        # -- 编辑区域 --
+        edit_group = QGroupBox("纠正标注")
+        eg = QVBoxLayout(edit_group)
+
+        action_edit_row = QHBoxLayout()
+        action_edit_row.addWidget(QLabel("动作"))
+        self.action_combo = QComboBox()
+        self.action_combo.setEditable(True)
+        self.action_combo.setMinimumWidth(120)
+        action_edit_row.addWidget(self.action_combo)
+
+        self.apply_btn = QPushButton("修改")
+        self.apply_btn.setObjectName("infoBtn")
+        self.apply_btn.clicked.connect(self._apply_edit)
+        action_edit_row.addWidget(self.apply_btn)
+
+        self.delete_btn = QPushButton("删除此帧")
+        self.delete_btn.setObjectName("stopBtn")
+        self.delete_btn.clicked.connect(self._delete_sample)
+        action_edit_row.addWidget(self.delete_btn)
+        eg.addLayout(action_edit_row)
+
+        save_row = QHBoxLayout()
+        self.save_btn = QPushButton("保存修正")
+        self.save_btn.setObjectName("startBtn")
+        self.save_btn.clicked.connect(self._save_corrections)
+        self.save_btn.setEnabled(False)
+        save_row.addWidget(self.save_btn)
+        self.edit_status = QLabel("")
+        self.edit_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        save_row.addWidget(self.edit_status)
+        eg.addLayout(save_row)
+        right_layout.addWidget(edit_group)
+
         # 动作分布统计
         stats_group = QGroupBox("动作分布")
         sg = QVBoxLayout(stats_group)
         self.stats_text = QTextEdit()
         self.stats_text.setReadOnly(True)
-        self.stats_text.setMaximumHeight(200)
+        self.stats_text.setMaximumHeight(160)
         sg.addWidget(self.stats_text)
         right_layout.addWidget(stats_group)
+
+        # 数据集质量
+        quality_group = QGroupBox("数据质量")
+        qg = QVBoxLayout(quality_group)
+        self.quality_label = QLabel("")
+        self.quality_label.setWordWrap(True)
+        self.quality_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        qg.addWidget(self.quality_label)
+        right_layout.addWidget(quality_group)
 
         right_layout.addStretch()
         splitter.addWidget(right)
 
         splitter.setSizes([700, 350])
         layout.addWidget(splitter, 1)
+
+        # 底部快捷键提示
+        shortcut_label = QLabel(
+            "快捷键:  ← → 切换帧  |  Space 播放/暂停  |  Del 删除  |  Ctrl+S 保存"
+        )
+        shortcut_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        shortcut_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(shortcut_label)
+
+    def _init_shortcuts(self):
+        QShortcut(QKeySequence(Qt.Key_Left), self, self._prev_frame)
+        QShortcut(QKeySequence(Qt.Key_Right), self, self._next_frame)
+        QShortcut(QKeySequence(Qt.Key_Space), self, self._toggle_play)
+        QShortcut(QKeySequence(Qt.Key_Delete), self, self._delete_sample)
+        QShortcut(QKeySequence("Ctrl+S"), self, self._save_corrections)
 
     # -- 文件浏览 --
 
@@ -206,6 +277,60 @@ class AnnotationViewer(QDialog):
         if path:
             self.video_input.setText(path)
 
+    @Slot()
+    def _load_compare(self):
+        """加载第二份标注文件进行 A/B 对比。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择对比标注文件", "",
+            "JSONL (*.jsonl);;所有文件 (*)"
+        )
+        if not path:
+            return
+
+        self._compare_samples.clear()
+        self._compare_map.clear()
+
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    sample = json.loads(line)
+                    self._compare_samples.append(sample)
+                    fid = sample.get("frame_id", 0)
+                    action = self._get_action(sample)
+                    if action:
+                        self._compare_map[fid] = action
+                except json.JSONDecodeError:
+                    continue
+
+        if self._compare_map:
+            # 统计差异
+            diff_count = 0
+            match_count = 0
+            for s in self._samples:
+                fid = s.get("frame_id", 0)
+                if fid in self._compare_map:
+                    if self._get_action(s) == self._compare_map[fid]:
+                        match_count += 1
+                    else:
+                        diff_count += 1
+
+            total = match_count + diff_count
+            agreement = match_count / total * 100 if total > 0 else 0
+            QMessageBox.information(
+                self, "对比已加载",
+                f"对比文件: {Path(path).name}\n"
+                f"匹配帧: {total}\n"
+                f"一致: {match_count} ({agreement:.1f}%)\n"
+                f"不一致: {diff_count}\n\n"
+                "不一致帧底部横幅将显示两个决策"
+            )
+            self._show_sample(self._current_idx)
+        else:
+            QMessageBox.warning(self, "提示", "对比文件为空")
+
     # -- 数据加载 --
 
     @Slot()
@@ -215,8 +340,11 @@ class AnnotationViewer(QDialog):
             QMessageBox.warning(self, "提示", "请选择有效的 JSONL 文件")
             return
 
+        self._jsonl_path = jsonl_path
         self._samples.clear()
         self._action_color_map.clear()
+        self._deleted_indices.clear()
+        self._modified = False
 
         with open(jsonl_path, "r", encoding="utf-8") as f:
             for line in f:
@@ -232,14 +360,18 @@ class AnnotationViewer(QDialog):
             QMessageBox.warning(self, "提示", "标注文件为空或格式不正确")
             return
 
-        # 构建动作颜色映射
-        actions_seen = []
+        # 构建动作列表和颜色映射
+        self._all_actions.clear()
         for s in self._samples:
             action = self._get_action(s)
-            if action and action not in actions_seen:
-                actions_seen.append(action)
-        for i, a in enumerate(actions_seen):
+            if action and action not in self._all_actions:
+                self._all_actions.append(action)
+        for i, a in enumerate(self._all_actions):
             self._action_color_map[a] = _ACTION_COLORS[i % len(_ACTION_COLORS)]
+
+        # 更新动作下拉框
+        self.action_combo.clear()
+        self.action_combo.addItems(self._all_actions)
 
         # 尝试加载视频
         video_path = self.video_input.text().strip()
@@ -259,7 +391,10 @@ class AnnotationViewer(QDialog):
         self._current_idx = 0
         self.slider.setValue(0)
         self._update_stats()
+        self._update_quality()
         self._show_sample(0)
+        self.save_btn.setEnabled(False)
+        self.edit_status.setText("")
 
     # -- 导航 --
 
@@ -282,7 +417,7 @@ class AnnotationViewer(QDialog):
             self._play_timer.stop()
             self.play_btn.setText("播放")
             self.play_btn.setObjectName("startBtn")
-            self.play_btn.setStyleSheet("")  # force re-style
+            self.play_btn.setStyleSheet("")
             self.play_btn.style().unpolish(self.play_btn)
             self.play_btn.style().polish(self.play_btn)
         else:
@@ -308,12 +443,96 @@ class AnnotationViewer(QDialog):
         self._current_idx = value
         self._show_sample(value)
 
+    # -- 编辑功能 --
+
+    @Slot()
+    def _apply_edit(self):
+        """修改当前帧的动作标注。"""
+        if not self._samples or self._current_idx >= len(self._samples):
+            return
+        new_action = self.action_combo.currentText().strip()
+        if not new_action:
+            return
+
+        sample = self._samples[self._current_idx]
+        ha = sample.setdefault("human_action", {})
+        old_action = ha.get("key", "") or ha.get("action", "")
+        if new_action == old_action:
+            return
+
+        ha["key"] = new_action
+        if "action" in ha and ha["action"] != "press":
+            ha["action"] = "press"
+
+        # 记录新动作到列表
+        if new_action not in self._all_actions:
+            self._all_actions.append(new_action)
+            self._action_color_map[new_action] = _ACTION_COLORS[
+                len(self._all_actions) % len(_ACTION_COLORS)]
+            self.action_combo.addItem(new_action)
+
+        self._modified = True
+        self.save_btn.setEnabled(True)
+        self.edit_status.setText(f"已修改: {old_action} → {new_action}")
+        self.edit_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 11px;")
+        self._update_stats()
+        self._update_quality()
+        self._show_sample(self._current_idx)
+
+    @Slot()
+    def _delete_sample(self):
+        """标记当前帧为删除。"""
+        if not self._samples or self._current_idx >= len(self._samples):
+            return
+        self._deleted_indices.add(self._current_idx)
+        self._modified = True
+        self.save_btn.setEnabled(True)
+        self.edit_status.setText(f"已标记删除 ({len(self._deleted_indices)} 帧待删除)")
+        self.edit_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+        self._update_stats()
+        self._update_quality()
+        self._show_sample(self._current_idx)
+
+    @Slot()
+    def _save_corrections(self):
+        """保存修正后的 JSONL 文件。"""
+        if not self._modified or not self._jsonl_path:
+            return
+
+        # 过滤掉删除的样本
+        kept = [s for i, s in enumerate(self._samples) if i not in self._deleted_indices]
+        deleted_count = len(self._deleted_indices)
+
+        # 写回文件
+        with open(self._jsonl_path, "w", encoding="utf-8") as f:
+            for sample in kept:
+                f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+        # 更新内部状态
+        self._samples = kept
+        self._deleted_indices.clear()
+        self._modified = False
+        self.save_btn.setEnabled(False)
+
+        # 重新调整滑块
+        self.slider.setMaximum(max(0, len(self._samples) - 1))
+        if self._current_idx >= len(self._samples):
+            self._current_idx = max(0, len(self._samples) - 1)
+        self.slider.setValue(self._current_idx)
+
+        self.edit_status.setText(f"已保存 ({len(kept)} 条, 删除 {deleted_count} 条)")
+        self.edit_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
+        self._update_stats()
+        self._update_quality()
+        self._show_sample(self._current_idx)
+
     # -- 渲染 --
 
     def _show_sample(self, idx: int):
         if idx < 0 or idx >= len(self._samples):
             return
 
+        is_deleted = idx in self._deleted_indices
         sample = self._samples[idx]
         action = self._get_action(sample)
         reason = self._get_reason(sample)
@@ -328,11 +547,25 @@ class AnnotationViewer(QDialog):
 
         color = self._action_color_map.get(action, (255, 255, 255))
         hex_color = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-        self.action_label.setText(action or "--")
-        self.action_label.setStyleSheet(
-            f"color: {hex_color}; font-size: 22px; font-weight: bold;"
-        )
+
+        if is_deleted:
+            self.action_label.setText(f"{action} [已删除]")
+            self.action_label.setStyleSheet(
+                f"color: {COLORS['danger']}; font-size: 22px; font-weight: bold; "
+                "text-decoration: line-through;"
+            )
+        else:
+            self.action_label.setText(action or "--")
+            self.action_label.setStyleSheet(
+                f"color: {hex_color}; font-size: 22px; font-weight: bold;"
+            )
+
         self.reason_label.setText(reason if reason else "")
+
+        # 设置编辑框当前值
+        combo_idx = self.action_combo.findText(action)
+        if combo_idx >= 0:
+            self.action_combo.setCurrentIndex(combo_idx)
 
         # 检测信息
         counts = sample.get("object_counts", {})
@@ -347,31 +580,33 @@ class AnnotationViewer(QDialog):
             f"推理 {inference_ms:.1f}ms  |  尺寸 {frame_size[0]}x{frame_size[1]}"
         )
 
+        # 对比信息
+        compare_action = self._compare_map.get(frame_id, "")
+
         # 渲染画面
         frame = self._get_video_frame(frame_id, frame_size)
-        self._draw_annotated_frame(frame, detections, action, reason, color)
+        self._draw_annotated_frame(frame, detections, action, reason, color,
+                                   is_deleted, compare_action)
 
     def _get_video_frame(self, frame_id: int, frame_size: list) -> np.ndarray:
-        """从视频获取对应帧，或生成黑底占位帧。"""
         if self._cap and self._cap.isOpened():
             self._cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, frame_id - 1))
             ret, frame = self._cap.read()
             if ret:
                 return frame
 
-        # 无视频：生成黑底帧
         w = frame_size[0] if frame_size[0] > 0 else 640
         h = frame_size[1] if frame_size[1] > 0 else 480
         frame = np.zeros((h, w, 3), dtype=np.uint8)
-        frame[:] = (20, 25, 35)  # 深蓝底色
-        # 提示文字
+        frame[:] = (20, 25, 35)
         cv2.putText(frame, "No video loaded", (w // 2 - 100, h // 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 120), 1, cv2.LINE_AA)
         return frame
 
     def _draw_annotated_frame(self, frame: np.ndarray, detections: list,
-                               action: str, reason: str, action_color: tuple):
-        """在帧上绘制检测框和 LLM 决策叠加层。"""
+                               action: str, reason: str, action_color: tuple,
+                               is_deleted: bool = False,
+                               compare_action: str = ""):
         h, w = frame.shape[:2]
 
         # 绘制检测框
@@ -382,7 +617,6 @@ class AnnotationViewer(QDialog):
             conf = det.get("confidence", 0)
             class_id = det.get("class_id", 0)
 
-            # 优先用像素坐标，否则从归一化坐标计算
             if bbox[2] > 0:
                 x1, y1, x2, y2 = [int(v) for v in bbox]
             elif bbox_norm:
@@ -395,15 +629,11 @@ class AnnotationViewer(QDialog):
 
             color = self._det_color(class_id)
 
-            # 半透明填充
             overlay = frame.copy()
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
             cv2.addWeighted(overlay, 0.1, frame, 0.9, 0, frame)
-
-            # 边框
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
 
-            # 标签
             label = f"{class_name} {conf:.0%}"
             (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             label_y = max(y1 - th - 8, 0)
@@ -416,22 +646,35 @@ class AnnotationViewer(QDialog):
             banner_h = 50
             banner_y = h - banner_h
 
-            # 半透明黑底
             overlay = frame.copy()
             cv2.rectangle(overlay, (0, banner_y), (w, h), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
 
-            # 动作标签（彩色圆点 + 文字）
-            cv2.circle(frame, (20, banner_y + banner_h // 2), 8, action_color, -1, cv2.LINE_AA)
-            cv2.putText(frame, f"ACTION: {action}", (36, banner_y + 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, action_color, 2, cv2.LINE_AA)
+            if is_deleted:
+                cv2.putText(frame, f"[DELETED] {action}", (36, banner_y + 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2, cv2.LINE_AA)
+                cv2.line(frame, (36, banner_y + 16), (36 + 300, banner_y + 16),
+                         (100, 100, 100), 2, cv2.LINE_AA)
+            else:
+                cv2.circle(frame, (20, banner_y + banner_h // 2), 8,
+                           action_color, -1, cv2.LINE_AA)
+                cv2.putText(frame, f"ACTION: {action}", (36, banner_y + 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, action_color, 2, cv2.LINE_AA)
 
-            # 理由
-            if reason:
-                max_len = max(40, w // 12)
-                display_reason = reason[:max_len] + "..." if len(reason) > max_len else reason
-                cv2.putText(frame, display_reason, (36, banner_y + 42),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 210), 1, cv2.LINE_AA)
+                if compare_action and compare_action != action:
+                    # A/B 对比：显示差异
+                    cv2.putText(frame, f"vs B: {compare_action}", (w // 2, banner_y + 22),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (241, 196, 15), 2, cv2.LINE_AA)
+                    if reason:
+                        max_len = max(30, w // 16)
+                        display_reason = reason[:max_len] + "..." if len(reason) > max_len else reason
+                        cv2.putText(frame, display_reason, (36, banner_y + 42),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 210), 1, cv2.LINE_AA)
+                elif reason:
+                    max_len = max(40, w // 12)
+                    display_reason = reason[:max_len] + "..." if len(reason) > max_len else reason
+                    cv2.putText(frame, display_reason, (36, banner_y + 42),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 210), 1, cv2.LINE_AA)
 
         # 转为 QPixmap 显示
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -443,9 +686,10 @@ class AnnotationViewer(QDialog):
         self.frame_label.setPixmap(scaled)
 
     def _update_stats(self):
-        """更新动作分布统计。"""
         dist: dict[str, int] = {}
-        for s in self._samples:
+        for i, s in enumerate(self._samples):
+            if i in self._deleted_indices:
+                continue
             action = self._get_action(s)
             if action:
                 dist[action] = dist.get(action, 0) + 1
@@ -464,6 +708,54 @@ class AnnotationViewer(QDialog):
             )
 
         self.stats_text.setHtml("<br>".join(lines) if lines else "无数据")
+
+    def _update_quality(self):
+        """更新数据集质量分析。"""
+        active = [s for i, s in enumerate(self._samples) if i not in self._deleted_indices]
+        total = len(active)
+        if total == 0:
+            self.quality_label.setText("无数据")
+            return
+
+        # 动作分布
+        dist: dict[str, int] = {}
+        for s in active:
+            action = self._get_action(s)
+            if action:
+                dist[action] = dist.get(action, 0) + 1
+
+        # 均衡度分析
+        counts = list(dist.values()) if dist else [0]
+        max_count = max(counts)
+        min_count = min(counts)
+        imbalance_ratio = max_count / max(min_count, 1)
+
+        # 评级
+        issues = []
+        if total < 50:
+            issues.append(f"样本过少 ({total})，建议 > 100")
+        if imbalance_ratio > 5:
+            least = min(dist, key=dist.get)
+            issues.append(f"严重不均衡: '{least}' 仅 {dist[least]} 条 (比例 1:{imbalance_ratio:.0f})")
+        elif imbalance_ratio > 3:
+            least = min(dist, key=dist.get)
+            issues.append(f"轻度不均衡: '{least}' 仅 {dist[least]} 条")
+
+        if len(dist) < 2:
+            issues.append("只有 1 种动作，无法训练分类器")
+
+        if self._deleted_indices:
+            issues.append(f"{len(self._deleted_indices)} 帧待删除")
+
+        lines = [f"有效样本: {total} 条  |  动作种类: {len(dist)}"]
+        if issues:
+            lines.append("")
+            for issue in issues:
+                lines.append(f"  ! {issue}")
+        else:
+            lines.append("  数据质量良好")
+
+        self.quality_label.setText("\n".join(lines))
 
     # -- 辅助 --
 
@@ -484,6 +776,18 @@ class AnnotationViewer(QDialog):
         return tuple(int(c) for c in color_bgr[0][0])
 
     def closeEvent(self, event):
+        if self._modified:
+            reply = QMessageBox.question(
+                self, "未保存的修改",
+                "有未保存的修正，是否保存？",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if reply == QMessageBox.Save:
+                self._save_corrections()
+            elif reply == QMessageBox.Cancel:
+                event.ignore()
+                return
+
         self._playing = False
         self._play_timer.stop()
         if self._cap:

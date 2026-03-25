@@ -515,6 +515,12 @@ class MainWindow(QMainWindow):
         self.dt_status_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 12px;")
         tg.addWidget(self.dt_status_label)
 
+        # 训练曲线图
+        from .train_chart import TrainChart
+        self.dt_chart = TrainChart()
+        self.dt_chart.setVisible(False)
+        tg.addWidget(self.dt_chart)
+
         layout.addWidget(train_group)
 
         layout.addStretch()
@@ -568,6 +574,22 @@ class MainWindow(QMainWindow):
         self.scene_status_text.setPlaceholderText("启动检测后显示场景信息")
         sg.addWidget(self.scene_status_text)
         layout.addWidget(scene_group)
+
+        # 配置导入/导出
+        config_group = QGroupBox("配置管理")
+        cg = QHBoxLayout(config_group)
+        export_btn = QPushButton("导出配置")
+        export_btn.setObjectName("infoBtn")
+        export_btn.setToolTip("将当前配置和 Profiles 导出为 ZIP 压缩包")
+        export_btn.clicked.connect(self._export_config)
+        cg.addWidget(export_btn)
+
+        import_btn = QPushButton("导入配置")
+        import_btn.setObjectName("browseBtn")
+        import_btn.setToolTip("从 ZIP 压缩包导入配置和 Profiles")
+        import_btn.clicked.connect(self._import_config)
+        cg.addWidget(import_btn)
+        layout.addWidget(config_group)
 
         layout.addStretch()
         self.config_tabs.addTab(tab, "场景")
@@ -667,6 +689,71 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     @Slot()
+    def _export_config(self):
+        """导出配置和 Profiles 为 ZIP 压缩包。"""
+        import zipfile
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "导出配置", "vision_agent_config.zip",
+            "ZIP (*.zip)"
+        )
+        if not save_path:
+            return
+        try:
+            with zipfile.ZipFile(save_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                # config.yaml
+                config_path = Path("config.yaml")
+                if config_path.exists():
+                    zf.write(config_path, "config.yaml")
+                # profiles/
+                profiles_dir = Path("profiles")
+                if profiles_dir.is_dir():
+                    for f in profiles_dir.glob("*.yaml"):
+                        zf.write(f, f"profiles/{f.name}")
+            self._log(f"[配置] 已导出到 {save_path}")
+            QMessageBox.information(self, "导出成功", f"配置已导出到:\n{save_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+    @Slot()
+    def _import_config(self):
+        """从 ZIP 压缩包导入配置和 Profiles。"""
+        import zipfile
+        path, _ = QFileDialog.getOpenFileName(
+            self, "导入配置", "",
+            "ZIP (*.zip)"
+        )
+        if not path:
+            return
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                names = zf.namelist()
+                # 安全检查：确保没有路径穿越
+                for name in names:
+                    if ".." in name or name.startswith("/"):
+                        raise ValueError(f"不安全的文件路径: {name}")
+
+                # 列出将要覆盖的文件
+                existing = [n for n in names if Path(n).exists()]
+                if existing:
+                    reply = QMessageBox.question(
+                        self, "确认覆盖",
+                        f"以下 {len(existing)} 个文件将被覆盖:\n" +
+                        "\n".join(existing[:10]) +
+                        ("\n..." if len(existing) > 10 else ""),
+                        QMessageBox.Yes | QMessageBox.Cancel,
+                    )
+                    if reply != QMessageBox.Yes:
+                        return
+
+                zf.extractall(".")
+
+            self._refresh_profiles()
+            self._log(f"[配置] 已从 {path} 导入")
+            QMessageBox.information(self, "导入成功", f"配置已导入，共 {len(names)} 个文件")
+        except Exception as e:
+            QMessageBox.critical(self, "导入失败", str(e))
+
+    @Slot()
     def _toggle_recording(self):
         if self._recorder and self._recorder.is_recording:
             self._stop_recording()
@@ -741,7 +828,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _preview_data(self):
-        """预览录制数据概况。"""
+        """预览录制数据概况 + 质量分析。"""
         data_dir = self.dt_data_dir.text().strip()
         if not data_dir:
             QMessageBox.warning(self, "提示", "请指定数据目录")
@@ -757,7 +844,8 @@ class MainWindow(QMainWindow):
             lines = [f"总样本数: {summary['total']}", ""]
 
             lines.append("动作分布:")
-            for action, count in summary.get("action_distribution", {}).items():
+            dist = summary.get("action_distribution", {})
+            for action, count in dist.items():
                 pct = count / summary["total"] * 100
                 lines.append(f"  {action}: {count} ({pct:.1f}%)")
 
@@ -765,6 +853,34 @@ class MainWindow(QMainWindow):
             lines.append("检测类别:")
             for cls, count in summary.get("detection_classes", {}).items():
                 lines.append(f"  {cls}: {count}")
+
+            # 质量分析
+            lines.append("")
+            lines.append("── 质量分析 ──")
+            issues = []
+            if total < 50:
+                issues.append(f"! 样本过少 ({total})，建议至少 100 条")
+            if total < 10:
+                issues.append("! 无法训练：少于 10 条有效样本")
+
+            if dist:
+                counts = list(dist.values())
+                max_c, min_c = max(counts), min(counts)
+                ratio = max_c / max(min_c, 1)
+                least = min(dist, key=dist.get)
+                if ratio > 5:
+                    issues.append(f"! 严重不均衡：'{least}' 仅 {min_c} 条 (1:{ratio:.0f})")
+                elif ratio > 3:
+                    issues.append(f"! 轻度不均衡：'{least}' 仅 {min_c} 条")
+
+                if len(dist) < 2:
+                    issues.append("! 只有 1 种动作，无法训练分类器")
+
+            if issues:
+                for issue in issues:
+                    lines.append(f"  {issue}")
+            else:
+                lines.append("  数据质量良好，可以开始训练")
 
             QMessageBox.information(self, "数据预览", "\n".join(lines))
         except Exception as e:
@@ -782,6 +898,8 @@ class MainWindow(QMainWindow):
         self.dt_use_btn.setEnabled(False)
         self.dt_progress.setVisible(True)
         self.dt_progress.setValue(0)
+        self.dt_chart.clear()
+        self.dt_chart.setVisible(True)
         self.dt_status_label.setText("准备中...")
 
         model_type = self.dt_model_type.currentText()
@@ -812,6 +930,7 @@ class MainWindow(QMainWindow):
             f"Epoch {epoch}/{total}  loss={loss:.4f}  "
             f"train={train_acc:.3f}  val={val_acc:.3f}"
         )
+        self.dt_chart.add_point(loss, train_acc, val_acc)
 
     @Slot(str, dict)
     def _on_dt_finished(self, model_dir: str, metrics: dict):

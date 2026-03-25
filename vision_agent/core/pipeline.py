@@ -1,6 +1,7 @@
 """主流程管线：视频采集 → 检测 → 状态更新 → 决策 → 执行 → 可视化。"""
 
 import logging
+import time
 from ..sources.base import BaseSource
 from ..agents.base import BaseAgent
 from .detector import Detector
@@ -26,7 +27,8 @@ class Pipeline:
                  model_manager: ModelManager | None = None,
                  auto_pilot=None,
                  roi_extractor=None,
-                 on_frame_callback=None):
+                 on_frame_callback=None,
+                 target_fps: float = 0):
         self.source = source
         self.detector = detector
         self.ws_server = ws_server
@@ -37,6 +39,7 @@ class Pipeline:
         self.auto_pilot = auto_pilot
         self.roi_extractor = roi_extractor
         self.on_frame_callback = on_frame_callback
+        self.target_fps = target_fps  # 0 = 不限速
         self._running = False
         self._decision_engine = None
 
@@ -78,8 +81,12 @@ class Pipeline:
 
         logger.info("Pipeline 启动")
 
+        frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0
+
         try:
             while self._running:
+                frame_start = time.monotonic()
+
                 frame = self.source.read()
                 if frame is None:
                     logger.info("视频源结束")
@@ -118,18 +125,23 @@ class Pipeline:
                     if ap_engine and ap_engine is not self._decision_engine:
                         self.decision_engine = ap_engine
 
-                # WebSocket 推送
+                # WebSocket 推送检测结果
                 if self.ws_server:
                     self.ws_server.broadcast(result)
 
                 # 独立决策引擎（AutoPilot 热加载的引擎走这里）
+                decided_actions = None
                 if self._decision_engine and state:
                     try:
-                        actions = self._decision_engine.decide(result, state)
-                        if actions:
-                            self._execute_standalone_actions(actions)
+                        decided_actions = self._decision_engine.decide(result, state)
+                        if decided_actions:
+                            self._execute_standalone_actions(decided_actions)
                     except Exception as e:
                         logger.error(f"决策引擎异常: {e}")
+
+                # WebSocket 推送决策结果
+                if self.ws_server and decided_actions:
+                    self.ws_server.broadcast_decision(decided_actions)
 
                 # Agent 处理
                 for agent in self.agents:
@@ -145,6 +157,12 @@ class Pipeline:
                     if not self.visualizer.show(display):
                         logger.info("用户关闭窗口")
                         break
+
+                # 帧率限制
+                if frame_interval > 0:
+                    elapsed = time.monotonic() - frame_start
+                    if elapsed < frame_interval:
+                        time.sleep(frame_interval - elapsed)
 
         except KeyboardInterrupt:
             logger.info("用户中断")

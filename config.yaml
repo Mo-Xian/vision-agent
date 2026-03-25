@@ -32,6 +32,10 @@ models:
     # 自定义模型示例:
     # custom: "runs/detect/your_model/train/weights/best.pt"
 
+# 管线配置
+pipeline:
+  target_fps: 30              # 目标帧率（0=不限速，全速运行）
+
 # 检测器配置
 detector:
   model: yolov8n.pt               # 模型文件路径

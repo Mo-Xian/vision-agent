@@ -68,6 +68,25 @@ class WebSocketServer:
                 dead.add(ws)
         self._clients -= dead
 
+    def broadcast_decision(self, actions):
+        """向所有客户端推送决策结果。"""
+        if not self._clients or self._loop is None:
+            return
+        decision_data = {
+            "type": "decision",
+            "actions": [
+                {
+                    "tool": a.tool_name,
+                    "parameters": a.parameters,
+                    "reason": a.reason,
+                    "priority": a.priority,
+                }
+                for a in actions
+            ],
+        }
+        data = json.dumps(decision_data, ensure_ascii=False)
+        asyncio.run_coroutine_threadsafe(self._broadcast(data), self._loop)
+
     def stop(self):
         if self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)

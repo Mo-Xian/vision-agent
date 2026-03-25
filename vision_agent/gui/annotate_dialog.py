@@ -48,12 +48,17 @@ class AnnotateDialog(QDialog):
         video_row = QHBoxLayout()
         video_row.addWidget(QLabel("视频文件"))
         self.video_input = QLineEdit(self._default_video)
-        self.video_input.setPlaceholderText("选择要标注的视频文件")
+        self.video_input.setPlaceholderText("选择视频文件（多个用分号分隔）")
         video_row.addWidget(self.video_input)
         video_browse = QPushButton("浏览")
         video_browse.setObjectName("browseBtn")
         video_browse.clicked.connect(self._browse_video)
         video_row.addWidget(video_browse)
+        batch_browse = QPushButton("批量")
+        batch_browse.setObjectName("browseBtn")
+        batch_browse.setToolTip("选择多个视频文件批量标注")
+        batch_browse.clicked.connect(self._browse_videos_batch)
+        video_row.addWidget(batch_browse)
         vg.addLayout(video_row)
 
         model_row = QHBoxLayout()
@@ -187,6 +192,14 @@ class AnnotateDialog(QDialog):
         if path:
             self.video_input.setText(path)
 
+    def _browse_videos_batch(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择多个视频", "",
+            "视频 (*.mp4 *.avi *.mkv *.mov *.flv *.wmv);;所有文件 (*)"
+        )
+        if paths:
+            self.video_input.setText("; ".join(paths))
+
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择模型", "",
@@ -217,13 +230,17 @@ class AnnotateDialog(QDialog):
 
     @Slot()
     def _start_annotate(self):
-        video = self.video_input.text().strip()
-        if not video:
+        video_text = self.video_input.text().strip()
+        if not video_text:
             QMessageBox.warning(self, "提示", "请选择视频文件")
             return
-        if not Path(video).exists():
-            QMessageBox.warning(self, "提示", f"视频文件不存在: {video}")
-            return
+
+        # 支持分号分隔的多个视频路径
+        video_paths = [v.strip() for v in video_text.split(";") if v.strip()]
+        for v in video_paths:
+            if not Path(v).exists():
+                QMessageBox.warning(self, "提示", f"视频文件不存在: {v}")
+                return
 
         yolo_model = self.yolo_model_input.text().strip() or "yolov8n.pt"
         actions_text = self.actions_input.text().strip()
@@ -245,11 +262,35 @@ class AnnotateDialog(QDialog):
 
         self._save_settings()
 
+        # 批量模式：多个视频依次标注，输出到同一目录不同文件
+        self._batch_queue = list(video_paths)
+        self._batch_base_save = save_path
+        self._batch_results: list[str] = []
+        self._batch_params = (actions, yolo_model, provider_name, api_key, save_path)
+        self._start_next_batch(*self._batch_params)
+
+    def _start_next_batch(self, actions, yolo_model, provider_name, api_key, save_path):
+        if not self._batch_queue:
+            # 所有批次完成
+            if len(self._batch_results) > 1:
+                self._on_log(f"批量标注全部完成，共 {len(self._batch_results)} 个视频")
+            return
+
+        video = self._batch_queue.pop(0)
+
+        # 多视频时为每个视频生成独立输出文件
+        if len(self._batch_results) > 0 or self._batch_queue:
+            stem = Path(video).stem
+            base = Path(self._batch_base_save)
+            save_path = str(base.parent / f"{base.stem}_{stem}{base.suffix}")
+            self._on_log(f"[批量] 开始 ({len(self._batch_results)+1}): {Path(video).name} → {Path(save_path).name}")
+
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.log_text.clear()
+        if not self._batch_results:
+            self.log_text.clear()
 
         self._save_path = save_path
 
@@ -297,14 +338,27 @@ class AnnotateDialog(QDialog):
 
     @Slot(dict)
     def _on_finished(self, stats: dict):
+        self._worker = None
+        self._batch_results.append(self._save_path)
+
+        # 检查是否还有批量任务
+        if self._batch_queue:
+            self._on_log(f"✓ 完成 {stats['annotated']} 条 → {Path(self._save_path).name}")
+            self._start_next_batch(*self._batch_params)
+            return
+
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setValue(100)
-        self.status_label.setText(
-            f"✓ 完成  标注 {stats['annotated']} 条 → {self._save_path}"
-        )
+        if len(self._batch_results) > 1:
+            self.status_label.setText(
+                f"✓ 批量完成  {len(self._batch_results)} 个视频  最后: {stats['annotated']} 条"
+            )
+        else:
+            self.status_label.setText(
+                f"✓ 完成  标注 {stats['annotated']} 条 → {self._save_path}"
+            )
         self.status_label.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px; font-weight: bold;")
-        self._worker = None
 
     @Slot(str)
     def _on_error(self, error: str):
