@@ -1204,6 +1204,7 @@ class MainWindow(QMainWindow):
             tool_registry=registry,
             state_manager=state_mgr,
             on_log=self._decision_log_callback,
+            on_action=self._action_callback,
         )
         self._log(f"Agent 就绪 ({engine_type}, 工具: {registry.tool_names})")
         return [agent]
@@ -1269,6 +1270,7 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.agent_stats_updated.connect(self._on_agent_stats)
         self._worker.decision_log.connect(self._on_decision_log, Qt.QueuedConnection)
+        self._worker.action_fired.connect(self._on_action_fired, Qt.QueuedConnection)
         self._worker.start()
 
         self.start_btn.setEnabled(False)
@@ -1331,9 +1333,17 @@ class MainWindow(QMainWindow):
         self._log("检测已停止")
         self._worker = None
 
+    def _action_callback(self, tool_name: str, parameters: dict, reason: str):
+        if self._worker:
+            self._worker.action_fired.emit(tool_name, parameters, reason)
+
     def _decision_log_callback(self, msg: str):
         if self._worker:
             self._worker.decision_log.emit(msg)
+
+    @Slot(str, dict, str)
+    def _on_action_fired(self, tool_name: str, parameters: dict, reason: str):
+        self.video_widget.set_action(tool_name, parameters, reason)
 
     @Slot(str)
     def _on_decision_log(self, msg: str):
@@ -1342,10 +1352,6 @@ class MainWindow(QMainWindow):
         self.decision_log_text.append(f"[{ts}] {msg}")
         scrollbar = self.decision_log_text.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
-
-        # 决策/执行动作显示在视频画面上
-        if any(tag in msg for tag in ("[决策]", "[执行]")):
-            self.video_widget.set_action(msg, duration=2.0)
 
     def _log(self, text: str):
         self.log_text.append(text)

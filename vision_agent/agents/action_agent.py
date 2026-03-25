@@ -24,6 +24,7 @@ class ActionAgent(LoggingMixin, BaseAgent):
         tool_registry: ToolRegistry,
         state_manager: StateManager | None = None,
         on_log: "callable | None" = None,
+        on_action: "callable | None" = None,
     ):
         self._engine = decision_engine
         self._tools = tool_registry
@@ -33,6 +34,7 @@ class ActionAgent(LoggingMixin, BaseAgent):
         self._pending_state = None
         self._stats = {"decisions": 0, "actions_executed": 0, "actions_failed": 0}
         self._on_log = on_log
+        self._on_action = on_action
 
     def on_start(self):
         self._running = True
@@ -84,6 +86,11 @@ class ActionAgent(LoggingMixin, BaseAgent):
                 if result.success:
                     self._stats["actions_executed"] += 1
                     self._emit_log(f"[执行] {action.tool_name} -> 成功")
+                    if self._on_action:
+                        try:
+                            self._on_action(action.tool_name, action.parameters, action.reason)
+                        except Exception:
+                            pass
                 else:
                     self._stats["actions_failed"] += 1
                     self._emit_log(f"[失败] {action.tool_name} -> {result.error}")
