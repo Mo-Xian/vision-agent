@@ -181,13 +181,18 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self.stop_btn)
         config_layout.insertWidget(1, btn_widget)
 
-        # -- 状态栏 + 日志（仅 Agent 模式可见） --
-        self._agent_info = QWidget()
-        ai_layout = QVBoxLayout(self._agent_info)
-        ai_layout.setContentsMargins(0, 0, 0, 0)
-        ai_layout.setSpacing(4)
+        # -- 状态栏 + 日志（嵌入 Agent 配置 Tab 底部） --
+        config_stretch = None
+        for i in range(config_layout.count()):
+            item = config_layout.itemAt(i)
+            if item and item.spacerItem():
+                config_stretch = i
+                break
+        # 移除 stretch，后面重新加
+        if config_stretch is not None:
+            config_layout.takeAt(config_stretch)
 
-        self._build_status_bar(ai_layout)
+        self._build_status_bar(config_layout)
 
         self.log_tabs = QTabWidget()
         self.log_text = QTextEdit()
@@ -196,9 +201,7 @@ class MainWindow(QMainWindow):
         self.decision_log_text = QTextEdit()
         self.decision_log_text.setReadOnly(True)
         self.log_tabs.addTab(self.decision_log_text, "决策")
-        ai_layout.addWidget(self.log_tabs, 1)
-
-        left_layout.addWidget(self._agent_info, 0)
+        config_layout.addWidget(self.log_tabs)
 
         splitter.addWidget(left_panel)
 
@@ -303,7 +306,7 @@ class MainWindow(QMainWindow):
         self._current_mode = mode
         index = {"train": 0, "agent": 1, "llm": 2}.get(mode, 1)
         self.mode_stack.setCurrentIndex(index)
-        self._agent_info.setVisible(mode == "agent")
+        self.video_widget.setVisible(mode == "agent")
 
         for btn, m in [
             (self.mode_train_btn, "train"),
