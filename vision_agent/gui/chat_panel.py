@@ -62,7 +62,7 @@ class ChatPanel(QWidget):
         self._max_history = 20
         self._working = False
         self._current_frame: np.ndarray | None = None
-        self._dryrun = True
+        self._dryrun = False
         self._text_mode: bool | None = None
         self._try_auto_init: "callable | None" = None  # 由父窗口设置
 
@@ -93,7 +93,7 @@ class ChatPanel(QWidget):
         opts_row.addWidget(self.attach_screen_check)
 
         self.dryrun_check = QCheckBox("仅模拟")
-        self.dryrun_check.setChecked(True)
+        self.dryrun_check.setChecked(False)
         self.dryrun_check.setToolTip("勾选后工具调用不会真正执行，仅显示将要执行的操作")
         self.dryrun_check.toggled.connect(self._on_dryrun_changed)
         opts_row.addWidget(self.dryrun_check)
