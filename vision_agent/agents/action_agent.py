@@ -35,6 +35,8 @@ class ActionAgent(LoggingMixin, BaseAgent):
         self._stats = {"decisions": 0, "actions_executed": 0, "actions_failed": 0}
         self._on_log = on_log
         self._on_action = on_action
+        self._recent_actions: list[Action] = []  # 线程安全：仅 append 和 slice 赋值
+        self._lock = threading.Lock()
 
     def on_start(self):
         self._running = True
@@ -86,17 +88,23 @@ class ActionAgent(LoggingMixin, BaseAgent):
                 if result.success:
                     self._stats["actions_executed"] += 1
                     self._emit_log(f"[执行] {action.tool_name} -> 成功")
-                    if self._on_action:
-                        try:
-                            self._on_action(action.tool_name, action.parameters, action.reason, action.target_bbox)
-                        except Exception:
-                            pass
+                    with self._lock:
+                        self._recent_actions.append(action)
+                        if len(self._recent_actions) > 10:
+                            self._recent_actions = self._recent_actions[-10:]
                 else:
                     self._stats["actions_failed"] += 1
                     self._emit_log(f"[失败] {action.tool_name} -> {result.error}")
             except Exception as e:
                 self._stats["actions_failed"] += 1
                 self._emit_log(f"[异常] {action.tool_name} -> {e}")
+
+    def pop_recent_actions(self) -> list[Action]:
+        """取出并清空最近执行的动作列表（GUI 线程调用）。"""
+        with self._lock:
+            actions = self._recent_actions
+            self._recent_actions = []
+            return actions
 
     @property
     def stats(self) -> dict:

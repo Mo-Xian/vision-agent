@@ -1225,7 +1225,6 @@ class MainWindow(QMainWindow):
             tool_registry=registry,
             state_manager=state_mgr,
             on_log=self._decision_log_callback,
-            on_action=self._action_callback,
         )
         self._log(f"Agent 就绪 ({engine_type}, 工具: {registry.tool_names})")
         return [agent]
@@ -1282,6 +1281,7 @@ class MainWindow(QMainWindow):
                 self._log(f"AutoPilot 初始化失败: {e}")
 
         self._log("启动检测...")
+        self._current_agents = agents
 
         self._worker = DetectionWorker(source, detector, agents=agents,
                                        auto_pilot=self._auto_pilot)
@@ -1291,7 +1291,6 @@ class MainWindow(QMainWindow):
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.agent_stats_updated.connect(self._on_agent_stats)
         self._worker.decision_log.connect(self._on_decision_log, Qt.QueuedConnection)
-        self._worker.action_fired.connect(self._on_action_fired, Qt.QueuedConnection)
         self._worker.start()
 
         self.start_btn.setEnabled(False)
@@ -1308,6 +1307,16 @@ class MainWindow(QMainWindow):
     @Slot(object, object)
     def _on_frame_ready(self, frame, result: DetectionResult):
         self._frame_count += 1
+
+        # 从 Agent 取最新执行的动作，推送给 VideoWidget 显示
+        for agent in getattr(self, '_current_agents', []):
+            if hasattr(agent, 'pop_recent_actions'):
+                for action in agent.pop_recent_actions():
+                    self.video_widget.set_action(
+                        action.tool_name, action.parameters,
+                        action.reason, target_bbox=action.target_bbox,
+                    )
+
         self.video_widget.update_frame(frame, result)
         self.count_label.setText(
             f"检测: {len(result.detections)}  |  帧: {self._frame_count}"
@@ -1354,17 +1363,9 @@ class MainWindow(QMainWindow):
         self._log("检测已停止")
         self._worker = None
 
-    def _action_callback(self, tool_name: str, parameters: dict, reason: str, target_bbox=None):
-        if self._worker:
-            self._worker.action_fired.emit(tool_name, parameters, reason, target_bbox)
-
     def _decision_log_callback(self, msg: str):
         if self._worker:
             self._worker.decision_log.emit(msg)
-
-    @Slot(str, dict, str, object)
-    def _on_action_fired(self, tool_name: str, parameters: dict, reason: str, target_bbox):
-        self.video_widget.set_action(tool_name, parameters, reason, target_bbox=target_bbox)
 
     @Slot(str)
     def _on_decision_log(self, msg: str):
