@@ -57,12 +57,28 @@ class LLMPanel(QWidget):
 
         layout.addWidget(group)
 
-        # 测试按钮
+        # 按钮行
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
         self.llm_test_btn = QPushButton("测试连接")
         self.llm_test_btn.setObjectName("infoBtn")
         self.llm_test_btn.setCursor(Qt.PointingHandCursor)
         self.llm_test_btn.setMinimumHeight(38)
-        layout.addWidget(self.llm_test_btn)
+        btn_row.addWidget(self.llm_test_btn)
+
+        self.llm_save_btn = QPushButton("保存配置")
+        self.llm_save_btn.setObjectName("startBtn")
+        self.llm_save_btn.setCursor(Qt.PointingHandCursor)
+        self.llm_save_btn.setMinimumHeight(38)
+        btn_row.addWidget(self.llm_save_btn)
+
+        layout.addLayout(btn_row)
+
+        # 保存状态提示
+        self.save_hint = QLabel("")
+        self.save_hint.setStyleSheet(f"color: {COLORS['success']}; font-size: 12px;")
+        layout.addWidget(self.save_hint)
 
         layout.addStretch()
         scroll.setWidget(content)

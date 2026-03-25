@@ -250,6 +250,7 @@ class MainWindow(QMainWindow):
         lp.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
         lp.llm_provider_combo.currentTextChanged.connect(self._on_provider_changed)
         lp.llm_test_btn.clicked.connect(self._test_llm_connection)
+        lp.llm_save_btn.clicked.connect(self._save_llm_settings)
 
         # 训练面板
         tp.auto_learn_btn.clicked.connect(self._open_auto_learn)
@@ -748,6 +749,19 @@ class MainWindow(QMainWindow):
         finally:
             lp.llm_test_btn.setEnabled(True)
             lp.llm_test_btn.setText("测试连接")
+
+    @Slot()
+    def _save_llm_settings(self):
+        lp = self.llm_panel
+        s = self._settings
+        s.setValue("decision/provider", lp.llm_provider_combo.currentText())
+        s.setValue("decision/model", lp.llm_model_combo.currentText())
+        s.setValue("decision/base_url", lp.llm_base_url.text())
+        s.sync()
+        lp.save_hint.setText("已保存")
+        self._log("[LLM] 配置已保存")
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(3000, lambda: lp.save_hint.setText(""))
 
     def _get_llm_api_key(self) -> str:
         lp = self.llm_panel
