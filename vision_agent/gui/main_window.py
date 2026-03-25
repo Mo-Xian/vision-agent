@@ -1205,13 +1205,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"创建视频源失败:\n{e}")
             return
 
-        detector = Detector(
-            model=self.model_combo.currentText(),
-            confidence=self.conf_spin.value(),
-            imgsz=int(self.imgsz_combo.currentText()),
-        )
+        try:
+            detector = Detector(
+                model=self.model_combo.currentText(),
+                confidence=self.conf_spin.value(),
+                imgsz=int(self.imgsz_combo.currentText()),
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载检测模型失败:\n{e}")
+            return
 
-        agents = self._build_agents()
+        try:
+            agents = self._build_agents()
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"创建 Agent 失败:\n{e}")
+            return
+
         self._frame_count = 0
         self.log_text.clear()
         self.decision_log_text.clear()
@@ -1219,12 +1228,15 @@ class MainWindow(QMainWindow):
         # 初始化 AutoPilot
         self._auto_pilot = None
         if hasattr(self, 'autopilot_check') and self.autopilot_check.isChecked():
-            self._auto_pilot = AutoPilot(
-                profile_manager=self._profile_mgr,
-                scene_classifier=self._scene_classifier,
-                on_log=self._decision_log_callback,
-            )
-            self._log("AutoPilot 已启用")
+            try:
+                self._auto_pilot = AutoPilot(
+                    profile_manager=self._profile_mgr,
+                    scene_classifier=self._scene_classifier,
+                    on_log=self._decision_log_callback,
+                )
+                self._log("AutoPilot 已启用")
+            except Exception as e:
+                self._log(f"AutoPilot 初始化失败: {e}")
 
         self._log("启动检测...")
 

@@ -46,39 +46,42 @@ class DetectionWorker(QThread):
         last_time = time.perf_counter()
         frame_count = 0
 
-        while self._running:
-            frame = self.source.read()
-            if frame is None:
-                self.error.emit("视频源已结束")
-                break
+        try:
+            while self._running:
+                frame = self.source.read()
+                if frame is None:
+                    self.error.emit("视频源已结束")
+                    break
 
-            result = self.detector.detect(frame)
+                result = self.detector.detect(frame)
 
-            # AutoPilot 场景分类
-            if self.auto_pilot:
-                self.auto_pilot.on_frame(frame, result)
+                # AutoPilot 场景分类
+                if self.auto_pilot:
+                    self.auto_pilot.on_frame(frame, result)
 
-            # Agent 处理
-            for agent in self.agents:
-                agent.on_detection(result)
-
-            # 计算 FPS
-            now = time.perf_counter()
-            dt = now - last_time
-            if dt > 0:
-                instant_fps = 1.0 / dt
-                self._fps = self._fps * self._fps_alpha + instant_fps * (1 - self._fps_alpha)
-            last_time = now
-
-            self.frame_ready.emit(frame, result)
-            self.fps_updated.emit(self._fps, result.inference_ms)
-
-            # 每 30 帧发送 Agent 统计
-            frame_count += 1
-            if frame_count % 30 == 0:
+                # Agent 处理
                 for agent in self.agents:
-                    if hasattr(agent, 'stats'):
-                        self.agent_stats_updated.emit(agent.stats)
+                    agent.on_detection(result)
+
+                # 计算 FPS
+                now = time.perf_counter()
+                dt = now - last_time
+                if dt > 0:
+                    instant_fps = 1.0 / dt
+                    self._fps = self._fps * self._fps_alpha + instant_fps * (1 - self._fps_alpha)
+                last_time = now
+
+                self.frame_ready.emit(frame, result)
+                self.fps_updated.emit(self._fps, result.inference_ms)
+
+                # 每 30 帧发送 Agent 统计
+                frame_count += 1
+                if frame_count % 30 == 0:
+                    for agent in self.agents:
+                        if hasattr(agent, 'stats'):
+                            self.agent_stats_updated.emit(agent.stats)
+        except Exception as e:
+            self.error.emit(f"检测运行错误: {e}")
 
         for agent in self.agents:
             agent.on_stop()
