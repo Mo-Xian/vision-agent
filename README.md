@@ -13,6 +13,34 @@
 
 ---
 
+## 界面预览
+
+### 训练工坊
+
+一键自动学习、手动标注、模型训练、Profile 管理，高级设置折叠隐藏。
+
+![训练工坊](docs/screenshots/mode_train.png)
+
+### Agent 执行
+
+配置输入源、决策引擎、Profile，启动检测后实时显示视频画面和检测结果。
+
+![Agent 执行](docs/screenshots/mode_agent.png)
+
+### AI 对话控制
+
+通过自然语言与 AI 对话，支持纯聊天和工具调用两种模式。AI 自动判断是否需要执行桌面操作。
+
+![AI 对话](docs/screenshots/mode_chat.png)
+
+### LLM 配置
+
+独立的 LLM 连接配置页面，标注、自动学习、对话控制共用此配置。
+
+![LLM 配置](docs/screenshots/mode_llm.png)
+
+---
+
 ## 能做什么
 
 | 场景 | 说明 |
@@ -26,42 +54,8 @@
 
 ## 架构
 
-```mermaid
-graph TB
-    subgraph 感知层
-        S[Sources<br/>screen/camera/video/image] --> MM[ModelManager]
-        MM --> D[Detector<br/>YOLOv8]
-        D --> DR[DetectionResult]
-        SC[SceneClassifier] --> ROI[ROIExtractor]
-    end
-
-    subgraph 决策层
-        DR --> SM[StateManager<br/>跨帧状态/空间/ROI]
-        SM --> DE{DecisionEngine}
-        DE --> R[Rule<br/>零延迟]
-        DE --> T[Trained<br/>MLP/RF 毫秒级]
-        DE --> L[LLM<br/>Claude/OpenAI 秒级]
-        DE --> H[Hierarchical<br/>战略→战术→操作]
-        DE --> RL[RL<br/>DQN 自主探索]
-    end
-
-    subgraph 执行层
-        DE --> TR[ToolRegistry]
-        TR --> K[Keyboard]
-        TR --> M[Mouse]
-        TR --> API[API Call]
-        TR --> SH[Shell]
-    end
-
-    subgraph 协调层
-        AP[AutoPilot<br/>场景→Profile→训练→热加载]
-        WS[WebSocket]
-        GUI[PySide6 GUI]
-    end
 ```
-
-```
-感知层:  Sources(screen/camera/video/image) → ModelManager → Detector → DetectionResult
+感知层:  Sources(screen/camera/video/image/stream) → ModelManager → Detector → DetectionResult
          SceneClassifier(场景识别) → ROIExtractor(区域特征)
 决策层:  StateManager(跨帧状态/空间/ROI) → DecisionEngine → Action
          ├─ Rule     (规则引擎，零延迟)
@@ -76,53 +70,53 @@ graph TB
 
 ---
 
-## 功能列表
+## 功能详细说明
 
 ### 感知与检测
 
-| 功能 | 说明 |
-|------|------|
-| **YOLO 实时检测** | 支持 YOLOv8 全系列模型（n/s/m/l），自动选择 GPU/CPU |
-| **多输入源** | 屏幕捕获、摄像头、视频文件、图片目录、RTSP 流 |
-| **ROI 提取** | 从固定区域提取特征（血条比例、颜色、亮度），辅助决策 |
-| **帧率控制** | 可配置目标 FPS，防止 CPU/GPU 过载（`pipeline.target_fps`） |
+- **YOLO 实时检测** — 支持 YOLOv8 全系列模型（n/s/m/l），自动选择 GPU/CPU
+- **多输入源** — 屏幕捕获、摄像头、视频文件、图片目录、RTSP/HTTP-FLV/HLS 流、B站直播间号
+- **ROI 特征提取** — 从固定区域提取特征（血条比例、颜色、亮度），辅助决策
+- **场景自动分类** — 基于检测结果自动识别当前场景，时序平滑防抖动
 
-### 决策引擎
+### 决策引擎（5 种可切换）
 
-| 功能 | 说明 |
-|------|------|
-| **规则引擎** | 基于 if-else 规则的决策，零延迟响应 |
-| **LLM 决策** | 接入 Claude / OpenAI / Qwen / DeepSeek / Ollama |
-| **训练模型决策** | MLP 或 RandomForest 轻量模型，毫秒级响应 |
-| **分层决策** | 战略层（5s）→ 战术层（1s）→ 操作层（每帧），各层独立引擎 |
-| **强化学习** | DQN 引擎，自主探索 + 经验回放 |
+| 引擎 | 延迟 | 说明 |
+|------|------|------|
+| **Rule** | 零延迟 | 基于 if-else 规则的决策，适合简单场景 |
+| **Trained** | 毫秒级 | MLP 或 RandomForest 轻量模型，训练后使用 |
+| **LLM** | 秒级 | 接入 Claude / OpenAI / Qwen / DeepSeek / MiniMax / Ollama，带可配置决策间隔 |
+| **Hierarchical** | 混合 | 三层架构：战略层（5s）→ 战术层（1s）→ 操作层（每帧），各层可用不同引擎 |
+| **RL** | 毫秒级 | DQN 强化学习，自主探索 + 经验回放 |
 
-### 数据与训练
+### 数据标注与训练
 
-| 功能 | 说明 |
-|------|------|
-| **人工录制** | 录制键盘/鼠标 + 检测结果，生成训练数据 |
-| **LLM 自动标注** | 视频抽帧 → YOLO 检测 → LLM 判断动作 → JSONL（支持 Tool Calling） |
-| **多视频批量标注** | 选择多个视频一次性标注，自动生成独立输出文件 |
-| **标注可视化回放** | 逐帧回放检测框 + LLM 决策动作/理由，含动作分布统计 |
-| **标注纠错** | 可视化回放中直接修改动作、删除坏样本，保存修正后的 JSONL |
-| **标注 A/B 对比** | 加载两份标注文件，逐帧对比决策差异，统计一致率 |
-| **训练曲线可视化** | 实时显示 Loss / Train Acc / Val Acc 曲线 |
-| **数据集质量分析** | 训练前分析样本数量、动作分布均衡度，提示潜在问题 |
-| **YOLO 训练** | GUI 内配置数据集和参数，一键训练自定义检测模型 |
-| **GPU/CPU 自动切换** | 训练和推理自动检测 CUDA，有 GPU 用 GPU，否则回退 CPU |
+- **LLM 自动标注** — 视频抽帧 → YOLO 检测 → LLM 分析画面并标注动作 → JSONL 数据集
+  - 支持 Tool Calling（函数调用 + enum 约束）和文本解析两种模式
+  - 支持多视频批量标注，自动生成独立输出文件
+- **标注可视化回放** — 逐帧回放检测框 + LLM 决策动作/理由，含动作分布统计图
+- **标注纠错** — 可视化回放中直接修改动作、删除坏样本，保存修正后的 JSONL
+- **标注 A/B 对比** — 加载两份标注文件，逐帧对比决策差异，统计一致率
+- **决策模型训练** — 支持 MLP 和 RandomForest，实时显示 Loss / Accuracy 训练曲线
+- **数据集质量分析** — 训练前分析样本数量、动作分布均衡度，提示潜在问题
+- **YOLO 自定义训练** — GUI 内配置数据集和参数，一键训练检测模型
+- **人工操作录制** — 录制键盘/鼠标操作 + YOLO 检测结果，生成训练数据
+
+### AI 对话控制
+
+- **自然语言对话** — 配置 LLM 后即可对话，AI 自动判断是否需要调用工具
+- **工具调用** — 支持键盘模拟、鼠标操作等，LLM 决定何时使用
+- **纯聊天模式** — 无需工具注册也可正常对话
+- **思考过程过滤** — 自动剥离推理模型的 `<think>` 标签，只显示最终回复
 
 ### 自动化与集成
 
-| 功能 | 说明 |
-|------|------|
-| **场景 Profile** | YAML 配置定义场景（动作、按键、ROI 区域），快速切换 |
-| **AutoPilot** | 自动识别场景 → 匹配 Profile → LLM 标注 → 训练 → 热加载 |
-| **动作执行** | 键盘模拟、鼠标模拟、HTTP API 调用、Shell 命令 |
-| **WebSocket** | 实时推送检测结果和决策动作 JSON，供外部系统对接 |
-| **配置导入/导出** | 一键导出/导入配置和 Profiles 为 ZIP 压缩包 |
-| **GUI 界面** | 深色科技感主题，配置/预览/录制/训练/标注/场景管理一体化 |
-| **EXE 打包** | 一键打包为独立可执行文件，无需 Python 环境 |
+- **场景 Profile** — YAML 配置定义场景（动作列表、按键映射、ROI 区域），快速切换
+- **AutoPilot** — 自动识别场景 → 匹配 Profile → LLM 标注 → 训练 → 热加载，全自动闭环
+- **动作执行** — 键盘模拟、鼠标模拟、HTTP API 调用、Shell 命令
+- **WebSocket 推送** — 实时推送检测结果和决策动作 JSON，供外部系统对接
+- **配置导入/导出** — 一键导出/导入配置和 Profiles 为 ZIP 压缩包
+- **EXE 打包** — 一键打包为独立可执行文件，无需 Python 环境
 
 ---
 
@@ -147,7 +141,6 @@ python gui_app.py
 # CLI 模式
 python main.py
 python main.py --source screen --model yolov8n.pt
-python main.py --no-gui
 
 # Windows 快速启动（自动创建 venv）
 start.bat
@@ -159,97 +152,65 @@ start.bat
 # 一键打包（自动创建 venv + 安装依赖 + PyInstaller 打包）
 build.bat
 
-# 或手动打包
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-pip install pyinstaller
-python build_exe.py
-
 # 产出在 dist/VisionAgent/ 目录下
 dist\VisionAgent\VisionAgent.exe
 ```
 
-> 打包使用 CPU 版 PyTorch，体积约 **886 MB**，运行内存约 **400 MB**。不需要目标机器安装 Python，将 `dist/VisionAgent/` 整个目录打包分发即可。
+> 打包使用 CPU 版 PyTorch，体积约 **886 MB**，运行内存约 **400 MB**。
 
 ---
 
 ## 使用场景
 
-### 场景一：游戏自动操作
+### 场景一：从零开始自动学习
 
-1. 打开 GUI → 输入源选「屏幕捕获」
-2. 场景 Tab 选择「王者荣耀 5v5」Profile
-3. 检测模型选择训练好的模型（或用预训练的 yolov8n.pt 先体验）
-4. 决策引擎选 `rule`（规则）或 `trained`（训练模型）
-5. 点击「启动检测」，程序自动识别画面并操作
+> 最推荐的使用方式，全程无需手写规则。
 
-### 场景二：从零开始训练
+1. 准备一段游戏/操作视频
+2. 切换到 **LLM** 页面，配置 LLM 供应商和 API Key，点击「保存配置」
+3. 切换到 **训练** 页面，点击「一键自动学习」
+4. 系统自动完成：视频抽帧 → YOLO 检测 → LLM 标注 → 训练决策模型
+5. 点击「查看结果」，可视化回放检测框 + 决策动作，支持纠错
+6. 切换到 **Agent** 页面，引擎选 `trained`，启动检测
 
-1. 准备一段游戏视频
-2. GUI →「录制/训练」Tab → 点击「LLM 自动标注」
-3. 配置视频路径、YOLO 模型、LLM（如 Claude）
-4. LLM 会逐帧分析画面并标注「这一帧应该做什么」
-5. 点击「查看标注」，可视化回放检测框 + LLM 决策，支持纠错
-6. 确认标注质量后点击「开始训练」，实时查看训练曲线
-7. 切换决策引擎到 `trained`，配置动作→按键映射
-8. 启动检测，模型自动决策
+### 场景二：手动标注 + 训练
 
-### 场景三：全自动 AutoPilot
+1. **训练** 页面 → 点击「手动标注」，选择视频和 LLM
+2. 标注完成后点击「查看结果」，逐帧审核，可纠错或 A/B 对比
+3. 确认标注质量后点击「开始训练」，实时查看训练曲线
+4. 点击「应用到 Agent」，自动切换引擎
 
-1. 在 `profiles/` 下创建场景 YAML 配置
-2. GUI → 场景 Tab → 勾选「启用 AutoPilot」
-3. 启动检测，系统自动完成：场景识别 → Profile 匹配 → LLM 标注 → 模型训练 → 热加载部署
+### 场景三：LLM 实时决策
+
+1. **LLM** 页面配置好 LLM 连接
+2. **Agent** 页面 → 引擎选 `llm`，输入源选「屏幕捕获」
+3. 启动检测，LLM 每秒分析画面并决策（间隔可调）
+
+### 场景四：AI 对话操控
+
+1. **Agent** 页面 → 切换到「对话」Tab
+2. 输入自然语言指令（如「帮我点击屏幕中间」「按下 Ctrl+S」）
+3. AI 自动判断是否需要执行操作，也可以纯聊天
+
+### 场景五：全自动 AutoPilot
+
+1. 在 `profiles/` 目录下准备场景 YAML 配置
+2. **Agent** 页面 → 展开「更多设置」→ 勾选「AutoPilot」
+3. 启动检测，系统自动完成：场景识别 → Profile 匹配 → 标注 → 训练 → 热加载
 
 ---
 
-## 数据管线
+## 界面说明
 
-### 方式一：人工录制
+界面分为 3 个模式，通过顶部按钮切换：
 
-```bash
-# 录制人工操作（键盘/鼠标 + YOLO 检测结果）
-python main.py --record --record-dir data/recordings
-
-# 训练决策模型
-python scripts/train_decision.py --data data/recordings/*.jsonl --output runs/decision/exp1
-
-# 使用训练模型
-python main.py --decision trained --decision-model runs/decision/exp1
-```
-
-### 方式二：LLM 自动标注
-
-```
-准备视频 → LLM 自动标注 → 可视化回放审核 → 纠错/A/B对比 → 训练模型 → 部署
-```
-
-1. GUI「录制与训练」Tab → 点击「LLM 自动标注」（支持批量多视频）
-2. 标注完成后点击「查看标注」，逐帧回放检测框 + 决策动作/理由
-3. 可在回放中直接纠错、删除坏样本，或加载另一份标注做 A/B 对比
-4. 确认标注质量后点击「开始训练」，实时查看 Loss/Acc 曲线
-5. 切换决策引擎到 `trained`，配置动作映射
-
-#### LLM 标注输出规范化
-
-| 模式 | 说明 | 适用场景 |
+| 模式 | 用途 | 核心操作 |
 |------|------|----------|
-| **Tool Calling**（默认） | 函数调用 + `enum` 约束，LLM 被强制从预设动作列表中选择 | Claude、GPT-4o、Qwen 等支持 function calling 的模型 |
-| **文本解析**（回退） | 从自由文本中提取 JSON 或关键词匹配 | Ollama 本地模型等不支持 tool calling 的场景 |
+| **训练** | 数据标注、模型训练、Profile 管理 | 一键自动学习、手动标注、查看结果、开始训练 |
+| **Agent** | 实时检测与执行 | 配置输入源/引擎、启动检测、AI 对话 |
+| **LLM** | LLM 连接配置 | 选择供应商/模型、填写 API Key、测试连接 |
 
-Tool Calling 模式下 LLM 收到的工具定义：
-```json
-{
-  "name": "decide_action",
-  "input_schema": {
-    "properties": {
-      "action": { "type": "string", "enum": ["attack", "retreat", "skill_1", "idle"] },
-      "reason": { "type": "string" }
-    },
-    "required": ["action"]
-  }
-}
-```
+常用设置直接显示，高级设置收纳在「更多设置」折叠区内。
 
 ---
 
@@ -285,50 +246,31 @@ auto_train:
 
 ---
 
-## 配置
-
-编辑 `config.yaml` 自定义：
-- 视频源类型和参数
-- YOLO 模型和检测参数（置信度、NMS、推理分辨率）
-- 决策引擎（rule / llm / trained / hierarchical / rl）
-- 动作映射（语义动作名 → 实际按键/鼠标/API）
-- 管线帧率（`pipeline.target_fps`）
-- WebSocket 服务端口
-
----
-
-## 项目结构
+## 数据管线
 
 ```
-vision-agent/
-├── main.py                          # CLI 入口
-├── gui_app.py                       # PySide6 GUI 入口
-├── build.bat / build_exe.py         # EXE 打包
-├── config.yaml                      # 全局配置
-├── profiles/                        # 场景 Profile 配置
-│   ├── wzry_5v5.yaml
-│   ├── fps_generic.yaml
-│   └── desktop.yaml
-├── scripts/
-│   └── train_decision.py            # 决策模型训练 CLI
-├── examples/
-│   ├── run_demo.py
-│   └── wzry_demo.py
-├── vision_agent/
-│   ├── core/                        # 检测、状态、场景分类、ROI、管线
-│   ├── decision/                    # Rule / LLM / Trained / Hierarchical / RL
-│   ├── profiles/                    # 场景 Profile 管理
-│   ├── auto/                        # AutoPilot + AutoTrainer
-│   ├── data/                        # 数据录制、LLM 标注、训练
-│   ├── tools/                       # 键盘/鼠标/API/Shell
-│   ├── agents/                      # ActionAgent
-│   ├── sources/                     # 视频源 (screen/camera/video/image)
-│   ├── server/                      # WebSocket 服务
-│   └── gui/                         # PySide6 GUI（含标注可视化、训练图表）
-├── tests/
-│   └── test_auto_annotator.py
-└── requirements.txt
+准备视频 → LLM 自动标注 → 可视化回放审核 → 纠错/A/B对比 → 训练模型 → 部署
 ```
+
+### CLI 方式
+
+```bash
+# 人工录制操作数据
+python main.py --record --record-dir data/recordings
+
+# 训练决策模型
+python scripts/train_decision.py --data data/recordings/*.jsonl --output runs/decision/exp1
+
+# 使用训练模型
+python main.py --decision trained --decision-model runs/decision/exp1
+```
+
+### LLM 标注输出规范化
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| **Tool Calling**（默认） | 函数调用 + `enum` 约束，LLM 被强制从预设动作列表中选择 | Claude、GPT-4o、Qwen 等支持 function calling 的模型 |
+| **文本解析**（回退） | 从自由文本中提取 JSON 或关键词匹配 | Ollama 本地模型等不支持 tool calling 的场景 |
 
 ---
 
@@ -350,8 +292,7 @@ vision-agent/
       "class_id": 0,
       "class_name": "person",
       "confidence": 0.92,
-      "bbox": [100.0, 200.0, 300.0, 500.0],
-      "bbox_norm": [0.0521, 0.1852, 0.1563, 0.4630]
+      "bbox": [100.0, 200.0, 300.0, 500.0]
     }
   ]
 }
@@ -374,6 +315,46 @@ vision-agent/
 
 ---
 
+## 项目结构
+
+```
+vision-agent/
+├── main.py                          # CLI 入口
+├── gui_app.py                       # PySide6 GUI 入口
+├── build.bat / build_exe.py         # EXE 打包
+├── config.yaml                      # 全局配置
+├── profiles/                        # 场景 Profile 配置
+│   ├── wzry_5v5.yaml
+│   ├── fps_generic.yaml
+│   └── desktop.yaml
+├── scripts/
+│   └── train_decision.py            # 决策模型训练 CLI
+├── vision_agent/
+│   ├── core/                        # 检测、状态、场景分类、ROI、管线
+│   ├── decision/                    # Rule / LLM / Trained / Hierarchical / RL
+│   ├── profiles/                    # 场景 Profile 管理
+│   ├── auto/                        # AutoPilot + AutoTrainer
+│   ├── data/                        # 数据录制、LLM 标注、训练
+│   ├── tools/                       # 键盘/鼠标/API/Shell
+│   ├── agents/                      # ActionAgent
+│   ├── sources/                     # 视频源 (screen/camera/video/image/stream)
+│   ├── server/                      # WebSocket 服务
+│   └── gui/                         # PySide6 GUI
+│       ├── main_window.py           # 主窗口（3 模式切换）
+│       ├── train_panel.py           # 训练工坊面板
+│       ├── agent_panel.py           # Agent 执行面板（配置 + 对话）
+│       ├── llm_panel.py             # LLM 配置面板
+│       ├── chat_panel.py            # AI 对话面板
+│       ├── annotate_dialog.py       # 标注对话框
+│       ├── annotation_viewer.py     # 标注可视化回放
+│       ├── train_chart.py           # 训练曲线图表
+│       ├── styles.py                # 深色主题样式
+│       └── widgets.py               # 通用组件（折叠区等）
+└── requirements.txt
+```
+
+---
+
 ## 技术栈
 
 | 组件 | 技术 |
@@ -383,7 +364,7 @@ vision-agent/
 | 深度学习 | PyTorch（自动 GPU/CPU） |
 | 机器学习 | scikit-learn |
 | GUI | PySide6 (Qt) |
-| LLM 接入 | Claude / OpenAI / Qwen / DeepSeek / Ollama |
+| LLM 接入 | Claude / OpenAI / Qwen / DeepSeek / MiniMax / Ollama |
 | 输入模拟 | pynput |
 | 屏幕捕获 | mss |
 | 实时通信 | websockets |

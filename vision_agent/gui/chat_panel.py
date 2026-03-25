@@ -433,9 +433,12 @@ class ChatPanel(QWidget):
             f'<p style="margin:6px 0;color:#4a7dff;"><b>你:</b> {_esc(text)}</p>')
 
     def _append_assistant(self, text: str):
+        clean = _strip_think(text)
+        if not clean:
+            return
         self._sig_append.emit(
             f'<p style="margin:6px 0;color:#2ecc71;"><b>AI:</b> '
-            f'<span style="color:#e8ecf4;">{_esc(text)}</span></p>')
+            f'<span style="color:#e8ecf4;">{_esc(clean)}</span></p>')
 
     def _append_tool_call(self, action: dict, result_text: str):
         tool = action.get("tool", "?")
@@ -472,6 +475,16 @@ class ChatPanel(QWidget):
         self.chat_display.clear()
         self._text_mode = None
         self.status_label.setText("")
+
+
+import re
+
+_THINK_RE = re.compile(r'<think>.*?</think>\s*', re.DOTALL)
+
+
+def _strip_think(text: str) -> str:
+    """去除推理模型的 <think>...</think> 标签内容。"""
+    return _THINK_RE.sub('', text).strip()
 
 
 def _esc(text: str) -> str:
