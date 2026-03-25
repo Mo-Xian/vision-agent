@@ -615,6 +615,17 @@ class MainWindow(QMainWindow):
         cg.addWidget(import_btn)
         layout.addWidget(config_group)
 
+        # 自动学习按钮
+        auto_learn_btn = QPushButton("自动学习（从兴趣到模型）")
+        auto_learn_btn.setObjectName("startBtn")
+        auto_learn_btn.setCursor(Qt.PointingHandCursor)
+        auto_learn_btn.setToolTip(
+            "输入感兴趣的场景描述，自动完成:\n"
+            "搜索下载 → YOLO检测 → LLM标注 → 监督训练 → RL强化 → 生成模型"
+        )
+        auto_learn_btn.clicked.connect(self._open_auto_learn)
+        layout.addWidget(auto_learn_btn)
+
         layout.addStretch()
         self.config_tabs.addTab(tab, "场景")
 
@@ -711,6 +722,14 @@ class MainWindow(QMainWindow):
 
         dialog = AnnotationViewer(self, jsonl_path=jsonl_path, video_path=video_path)
         dialog.exec()
+
+    @Slot()
+    def _open_auto_learn(self):
+        from .auto_learn_dialog import AutoLearnDialog
+        dialog = AutoLearnDialog(self)
+        dialog.exec()
+        # 完成后刷新 Profile 列表
+        self._refresh_profiles()
 
     @Slot()
     def _export_config(self):
