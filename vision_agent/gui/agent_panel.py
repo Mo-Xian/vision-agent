@@ -1,9 +1,9 @@
-"""Agent 执行面板：运行配置 + 对话控制（2 Tab 精简布局）。"""
+"""Agent 执行面板：极简布局，核心配置 + 对话控制。"""
 
 import json
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QTabWidget, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
+    QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QLineEdit, QPushButton, QSpinBox,
     QDoubleSpinBox, QTextEdit, QFormLayout, QCheckBox,
     QScrollArea, QFrame,
@@ -15,14 +15,14 @@ from .widgets import CollapsibleSection
 
 
 class AgentPanel(QTabWidget):
-    """Agent 执行面板，2 个 Tab：运行配置、对话控制。"""
+    """Agent 执行面板，2 个 Tab：配置、对话。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._build_config_tab()
         self._build_chat_tab()
 
-    # ── Tab 1: 运行配置（输入源 + 决策引擎 + 场景 合并） ──
+    # ── Tab 1: 配置 ──
 
     def _build_config_tab(self):
         scroll = QScrollArea()
@@ -33,83 +33,81 @@ class AgentPanel(QTabWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        # ▸ 输入源 + 决策引擎（核心设置，平铺）
-        core_group = QGroupBox("基本配置")
-        cg = QFormLayout(core_group)
-        cg.setSpacing(6)
+        # ━━━ 核心 3 项：输入源 / 引擎 / Profile ━━━
+        core = QFormLayout()
+        core.setSpacing(6)
 
         self.source_type = QComboBox()
         self.source_type.addItems(["screen", "camera", "video", "image", "stream"])
         self.source_type.setCurrentText("video")
-        cg.addRow("输入源", self.source_type)
+        core.addRow("输入源", self.source_type)
+
+        # 文件路径（video/image 时显示）
+        path_widget = QWidget()
+        path_layout = QHBoxLayout(path_widget)
+        path_layout.setContentsMargins(0, 0, 0, 0)
+        path_layout.setSpacing(4)
+        self.path_input = QLineEdit()
+        self.path_input.setPlaceholderText("视频/图片路径")
+        path_layout.addWidget(self.path_input)
+        self.browse_btn = QPushButton("...")
+        self.browse_btn.setObjectName("browseBtn")
+        self.browse_btn.setMaximumWidth(32)
+        path_layout.addWidget(self.browse_btn)
+        self.path_label = QLabel("文件")
+        core.addRow(self.path_label, path_widget)
 
         self.engine_combo = QComboBox()
         self.engine_combo.addItems(["none", "rule", "trained", "llm", "hierarchical", "rl"])
         self.engine_combo.setCurrentText("rule")
-        cg.addRow("决策引擎", self.engine_combo)
+        core.addRow("引擎", self.engine_combo)
 
         self.agent_profile_combo = QComboBox()
         self.agent_profile_combo.addItem("(无)")
-        cg.addRow("场景 Profile", self.agent_profile_combo)
+        core.addRow("Profile", self.agent_profile_combo)
 
-        layout.addWidget(core_group)
+        layout.addLayout(core)
 
-        # ▸ 输入源详细配置（根据类型动态显示）
-        self._source_detail = QWidget()
-        sd_layout = QVBoxLayout(self._source_detail)
-        sd_layout.setContentsMargins(0, 0, 0, 0)
-        sd_layout.setSpacing(4)
+        # ━━━ 输入源附加参数（动态显示） ━━━
 
-        # 路径行（video / image）
-        path_row = QHBoxLayout()
-        self.path_label = QLabel("文件路径")
-        path_row.addWidget(self.path_label)
-        self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText("文件路径 / rtsp:// / http://")
-        path_row.addWidget(self.path_input)
-        self.browse_btn = QPushButton("...")
-        self.browse_btn.setObjectName("browseBtn")
-        self.browse_btn.setMaximumWidth(32)
-        path_row.addWidget(self.browse_btn)
-        sd_layout.addLayout(path_row)
-
-        loop_row = QHBoxLayout()
-        loop_row.addWidget(QLabel("循环"))
+        # 循环播放
         self.loop_combo = QComboBox()
         self.loop_combo.addItems(["否", "是"])
-        loop_row.addWidget(self.loop_combo)
-        loop_row.addStretch()
-        sd_layout.addLayout(loop_row)
+        self._loop_row = QWidget()
+        lr = QHBoxLayout(self._loop_row)
+        lr.setContentsMargins(0, 0, 0, 0)
+        lr.addWidget(QLabel("循环"))
+        lr.addWidget(self.loop_combo)
+        lr.addStretch()
+        layout.addWidget(self._loop_row)
 
-        # 摄像头
-        self.camera_label = QLabel("设备号")
-        sd_layout.addWidget(self.camera_label)
+        # 摄像头设备号
+        self.camera_label = QLabel("摄像头设备号")
         self.camera_device = QSpinBox()
         self.camera_device.setRange(0, 10)
-        sd_layout.addWidget(self.camera_device)
+        layout.addWidget(self.camera_label)
+        layout.addWidget(self.camera_device)
 
-        # 屏幕
-        self.monitor_label = QLabel("显示器")
-        sd_layout.addWidget(self.monitor_label)
+        # 显示器编号
+        self.monitor_label = QLabel("显示器编号")
         self.monitor_num = QSpinBox()
         self.monitor_num.setRange(1, 5)
-        sd_layout.addWidget(self.monitor_num)
+        layout.addWidget(self.monitor_label)
+        layout.addWidget(self.monitor_num)
 
-        # 实时流
+        # 流地址
         self.stream_label = QLabel("流地址")
-        sd_layout.addWidget(self.stream_label)
         self.stream_input = QLineEdit()
-        self.stream_input.setPlaceholderText(
-            "rtsp://...  |  B站直播间号  |  http://.../live.flv"
-        )
-        sd_layout.addWidget(self.stream_input)
-        self.stream_hint = QLabel("支持: RTSP / HTTP-FLV / HLS / B站直播间号")
+        self.stream_input.setPlaceholderText("rtsp://... | B站直播间号 | http://.../live.flv")
+        self.stream_hint = QLabel("RTSP / HTTP-FLV / HLS / B站直播间号")
         self.stream_hint.setStyleSheet("color: gray; font-size: 11px;")
-        sd_layout.addWidget(self.stream_hint)
+        layout.addWidget(self.stream_label)
+        layout.addWidget(self.stream_input)
+        layout.addWidget(self.stream_hint)
 
-        layout.addWidget(self._source_detail)
-
-        # ▸ 决策引擎配置（按引擎类型动态显示）
+        # ━━━ 更多设置（折叠） ━━━
+        more = CollapsibleSection("更多设置")
+        mg = more.content_layout()
 
         # LLM 决策间隔
         self.llm_interval_widget = QWidget()
@@ -119,22 +117,24 @@ class AgentPanel(QTabWidget):
         self.llm_interval.setRange(0.1, 30.0)
         self.llm_interval.setSingleStep(0.5)
         self.llm_interval.setValue(1.0)
-        interval_layout.addRow("决策间隔(秒)", self.llm_interval)
+        interval_layout.addRow("LLM 决策间隔(秒)", self.llm_interval)
         self.llm_interval_widget.setVisible(False)
-        layout.addWidget(self.llm_interval_widget)
+        mg.addWidget(self.llm_interval_widget)
 
-        # LLM 配置提示
+        # LLM 提示
         self.llm_config_widget = QWidget()
         self.llm_config_widget.setVisible(False)
         llm_hint_layout = QVBoxLayout(self.llm_config_widget)
         llm_hint_layout.setContentsMargins(0, 0, 0, 0)
         llm_hint_layout.addWidget(QLabel("使用训练工坊中配置的 LLM"))
-        layout.addWidget(self.llm_config_widget)
+        mg.addWidget(self.llm_config_widget)
 
-        # Trained 模型配置（折叠）
-        self.trained_config_widget = CollapsibleSection("训练模型配置")
+        # Trained 配置
+        self.trained_config_widget = QWidget()
         self.trained_config_widget.setVisible(False)
-        tc = self.trained_config_widget.content_layout()
+        tc_layout = QVBoxLayout(self.trained_config_widget)
+        tc_layout.setContentsMargins(0, 0, 0, 0)
+        tc_layout.setSpacing(4)
 
         trained_dir_row = QHBoxLayout()
         trained_dir_row.addWidget(QLabel("模型目录"))
@@ -146,7 +146,7 @@ class AgentPanel(QTabWidget):
         self.trained_browse_btn.setObjectName("browseBtn")
         self.trained_browse_btn.setMaximumWidth(32)
         trained_dir_row.addWidget(self.trained_browse_btn)
-        tc.addLayout(trained_dir_row)
+        tc_layout.addLayout(trained_dir_row)
 
         trained_form = QFormLayout()
         self.trained_conf_spin = QDoubleSpinBox()
@@ -154,14 +154,11 @@ class AgentPanel(QTabWidget):
         self.trained_conf_spin.setSingleStep(0.05)
         self.trained_conf_spin.setValue(0.30)
         trained_form.addRow("置信阈值", self.trained_conf_spin)
-        tc.addLayout(trained_form)
+        tc_layout.addLayout(trained_form)
 
-        tc.addWidget(QLabel("动作映射 (语义→按键):"))
+        tc_layout.addWidget(QLabel("动作映射 (语义→按键):"))
         self.trained_action_map_edit = QTextEdit()
         self.trained_action_map_edit.setMaximumHeight(80)
-        self.trained_action_map_edit.setPlaceholderText(
-            '{"attack": {"type": "key", "key": "a"}, ...}'
-        )
         default_map = {
             "attack": {"type": "key", "key": "a"},
             "retreat": {"type": "key", "key": "s"},
@@ -169,42 +166,42 @@ class AgentPanel(QTabWidget):
             "skill_2": {"type": "key", "key": "2"},
             "skill_3": {"type": "key", "key": "3"},
         }
-        self.trained_action_map_edit.setPlainText(json.dumps(default_map, indent=2, ensure_ascii=False))
-        tc.addWidget(self.trained_action_map_edit)
-        layout.addWidget(self.trained_config_widget)
+        self.trained_action_map_edit.setPlainText(
+            json.dumps(default_map, indent=2, ensure_ascii=False)
+        )
+        tc_layout.addWidget(self.trained_action_map_edit)
+        mg.addWidget(self.trained_config_widget)
 
-        # ▸ 场景（折叠）
-        scene_section = CollapsibleSection("场景与 AutoPilot")
-        sg = scene_section.content_layout()
+        # AutoPilot
+        self.autopilot_check = QCheckBox("AutoPilot（自动识别场景并切换）")
+        self.autopilot_check.setToolTip("自动根据检测结果识别场景，切换 Profile")
+        mg.addWidget(self.autopilot_check)
 
-        self.profile_refresh_btn = QPushButton("刷新 Profile 列表")
+        self.profile_refresh_btn = QPushButton("刷新 Profile")
         self.profile_refresh_btn.setObjectName("browseBtn")
         self.profile_refresh_btn.setCursor(Qt.PointingHandCursor)
-        sg.addWidget(self.profile_refresh_btn)
-
-        self.autopilot_check = QCheckBox("启用 AutoPilot（自动识别场景并切换）")
-        self.autopilot_check.setToolTip("自动根据检测结果识别场景，切换 Profile")
-        sg.addWidget(self.autopilot_check)
+        mg.addWidget(self.profile_refresh_btn)
 
         self.scene_status_text = QTextEdit()
         self.scene_status_text.setReadOnly(True)
-        self.scene_status_text.setMaximumHeight(80)
-        self.scene_status_text.setPlaceholderText("启动检测后显示场景信息")
-        sg.addWidget(self.scene_status_text)
-        layout.addWidget(scene_section)
+        self.scene_status_text.setMaximumHeight(60)
+        self.scene_status_text.setPlaceholderText("场景状态")
+        mg.addWidget(self.scene_status_text)
+
+        layout.addWidget(more)
 
         layout.addStretch()
         scroll.setWidget(tab)
-        self.addTab(scroll, "运行配置")
+        self.addTab(scroll, "配置")
 
-        # 初始化可见性
+        # 初始化
         self.update_source_visibility("video")
 
     # ── Tab 2: 对话控制 ──
 
     def _build_chat_tab(self):
         self.chat_panel = ChatPanel()
-        self.addTab(self.chat_panel, "对话控制")
+        self.addTab(self.chat_panel, "对话")
 
     # ── 动态可见性 ──
 
@@ -216,15 +213,17 @@ class AgentPanel(QTabWidget):
         is_image = source_type == "image"
         is_stream = source_type == "stream"
 
-        self.path_label.setVisible(is_video or is_image)
-        self.path_input.setVisible(is_video or is_image)
-        self.browse_btn.setVisible(is_video or is_image)
-        self.loop_combo.setVisible(is_video or is_image)
+        show_path = is_video or is_image
+        self.path_label.setVisible(show_path)
+        self.path_input.setVisible(show_path)
+        self.browse_btn.setVisible(show_path)
+        self.path_input.parentWidget().setVisible(show_path)
+        self._loop_row.setVisible(is_video or is_image)
 
         if is_image:
-            self.path_label.setText("图片路径 / 目录")
+            self.path_label.setText("图片")
         else:
-            self.path_label.setText("文件路径")
+            self.path_label.setText("文件")
 
         self.camera_label.setVisible(is_camera)
         self.camera_device.setVisible(is_camera)
@@ -236,11 +235,6 @@ class AgentPanel(QTabWidget):
 
     def update_engine_visibility(self, engine_type: str):
         """根据引擎类型更新控件可见性。"""
-        is_trained = engine_type == "trained"
-        is_llm = engine_type == "llm"
-
-        self.trained_config_widget.setVisible(is_trained)
-        if is_trained:
-            self.trained_config_widget.set_expanded(True)
-        self.llm_config_widget.setVisible(is_llm)
-        self.llm_interval_widget.setVisible(is_llm)
+        self.trained_config_widget.setVisible(engine_type == "trained")
+        self.llm_config_widget.setVisible(engine_type == "llm")
+        self.llm_interval_widget.setVisible(engine_type == "llm")
