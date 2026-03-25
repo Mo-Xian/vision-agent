@@ -348,9 +348,6 @@ class ChatPanel(QWidget):
                 "content": content if content else response.text or "",
             })
 
-            if actions and response.text:
-                self._append_assistant(response.text)
-
             return actions, response.text if not actions else ""
 
         except Exception as e:
@@ -382,8 +379,6 @@ class ChatPanel(QWidget):
         self._conversation.append({"role": "assistant", "content": response.text})
 
         if actions:
-            if thinking:
-                self._append_assistant(thinking)
             return actions, ""
         return [], response.text
 
