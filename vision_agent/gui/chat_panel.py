@@ -205,10 +205,6 @@ class ChatPanel(QWidget):
             self._append_system("LLM Provider 初始化失败，请检查 LLM 配置。")
             return
 
-        if not self._registry or len(self._registry) == 0:
-            self._append_system("工具未注册。请确保 pynput 已安装。")
-            return
-
         self.input_edit.clear()
         self._append_user(text)
         self._set_status("思考中...")
@@ -290,15 +286,22 @@ class ChatPanel(QWidget):
             return True
         return False
 
+    def _has_tools(self) -> bool:
+        return self._registry is not None and len(self._registry) > 0
+
     def _call_llm(self):
         """在后台线程调用 LLM 并处理响应。"""
         try:
-            use_text_mode = self._should_use_text_mode()
-            self._emit_log(f"[对话] 调用模式: {'文本' if use_text_mode else '工具'}")
-
-            if use_text_mode:
+            has_tools = self._has_tools()
+            if not has_tools:
+                # 没有工具，纯聊天模式
+                self._emit_log("[对话] 纯聊天模式（无工具）")
+                actions, reply_text = self._call_chat_mode()
+            elif self._should_use_text_mode():
+                self._emit_log("[对话] 文本模式（工具通过文本描述）")
                 actions, reply_text = self._call_text_mode()
             else:
+                self._emit_log("[对话] 工具调用模式")
                 actions, reply_text = self._call_tool_mode()
 
             self._emit_log(f"[对话] 返回: actions={len(actions)}, text={len(reply_text or '')}字")
@@ -328,6 +331,25 @@ class ChatPanel(QWidget):
             self._set_status("")
             # 必须在 GUI 线程恢复控件状态
             QTimer.singleShot(0, self._on_llm_done)
+
+    def _call_chat_mode(self) -> tuple[list[dict], str]:
+        """纯聊天模式，不传工具。"""
+        system = "你是一个智能助手，用简洁的中文回答用户问题。"
+
+        response = self._provider.chat(
+            messages=self._conversation,
+            system=system,
+            tools=None,
+            max_tokens=2048,
+        )
+
+        reply = response.text or ""
+        self._emit_log(f"[对话] chat_mode 响应: {len(reply)}字")
+
+        if reply:
+            self._conversation.append({"role": "assistant", "content": reply})
+
+        return [], reply
 
     def _call_tool_mode(self) -> tuple[list[dict], str]:
         """工具调用模式。返回 (actions, reply_text)。"""

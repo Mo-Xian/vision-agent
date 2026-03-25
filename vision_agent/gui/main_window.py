@@ -801,12 +801,11 @@ class MainWindow(QMainWindow):
         try:
             registry.register(KeyboardTool())
             registry.register(MouseTool())
+            self.agent_panel.chat_panel.set_tool_registry(registry)
+            self._log(f"[对话] LLM 已就绪: {provider_name}/{model}（含键鼠工具）")
         except ImportError:
-            self._log("[对话] pynput 未安装，键盘鼠标工具不可用")
-            return False
+            self._log(f"[对话] LLM 已就绪: {provider_name}/{model}（纯聊天，pynput 未安装）")
 
-        self.agent_panel.chat_panel.set_tool_registry(registry)
-        self._log(f"[对话] LLM 已就绪: {provider_name}/{model}")
         return True
 
     # ================================================================
