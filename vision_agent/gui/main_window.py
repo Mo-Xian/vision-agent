@@ -32,6 +32,7 @@ from ..agents.action_agent import ActionAgent
 from .video_widget import VideoWidget
 from .worker import DetectionWorker
 from .decision_train_worker import DecisionTrainWorker
+from .chat_panel import ChatPanel
 
 from .styles import MAIN_STYLESHEET, COLORS
 
@@ -153,6 +154,7 @@ class MainWindow(QMainWindow):
         self._build_agent_source_tab()
         self._build_agent_engine_tab()
         self._build_agent_scene_tab()
+        self._build_agent_chat_tab()
         self.mode_stack.addWidget(self.agent_tabs)  # index 1
 
         left_layout.addWidget(self.mode_stack, 1)
@@ -766,6 +768,51 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
         self.agent_tabs.addTab(tab, "场景")
+
+    def _build_agent_chat_tab(self):
+        """Agent Tab 4: LLM 对话控制"""
+        self.chat_panel = ChatPanel()
+        self.chat_panel._try_auto_init = self._init_chat_provider
+        self.agent_tabs.addTab(self.chat_panel, "对话控制")
+        self.agent_tabs.currentChanged.connect(self._on_agent_tab_changed)
+
+    def _on_agent_tab_changed(self, index: int):
+        """切换到对话控制 tab 时自动初始化 LLM。"""
+        tab_text = self.agent_tabs.tabText(index)
+        if tab_text == "对话控制" and self.chat_panel._provider is None:
+            self._init_chat_provider()
+
+    def _init_chat_provider(self):
+        """根据当前 LLM 配置初始化对话面板的 Provider 和工具。"""
+        api_key = self._get_llm_api_key()
+        provider_name = self.llm_provider_combo.currentText()
+        model = self.llm_model_combo.currentText()
+        base_url = self.llm_base_url.text().strip()
+
+        if not api_key and provider_name != "ollama":
+            self.chat_panel.set_provider(None)
+            return False
+
+        try:
+            provider = create_provider(provider_name, api_key or "ollama", model, base_url)
+            self.chat_panel.set_provider(provider)
+        except Exception as e:
+            self._log(f"[对话] 创建 LLM Provider 失败: {e}")
+            self.chat_panel.set_provider(None)
+            return False
+
+        # 工具注册（对话面板始终注册真实工具，由面板自身 dryrun 控制是否执行）
+        registry = ToolRegistry()
+        try:
+            registry.register(KeyboardTool())
+            registry.register(MouseTool())
+        except ImportError:
+            self._log("[对话] pynput 未安装，键盘鼠标工具不可用")
+            return False
+
+        self.chat_panel.set_tool_registry(registry)
+        self._log(f"[对话] LLM 已就绪: {provider_name}/{model}")
+        return True
 
     # ================================================================
     #  模式切换
@@ -1484,6 +1531,8 @@ class MainWindow(QMainWindow):
                         action.reason, target_bbox=action.target_bbox,
                     )
         self.video_widget.update_frame(frame, result)
+        if hasattr(self, 'chat_panel'):
+            self.chat_panel.update_frame(frame)
         self.count_label.setText(
             f"检测: {len(result.detections)}  |  帧: {self._frame_count}"
         )
