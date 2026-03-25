@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QLabel
 from ..core.detector import DetectionResult
 from .styles import COLORS
 
-# 动作图标映射（tool_name → 显示符号）
+# 动作图标映射
 _ACTION_ICONS = {
     "keyboard": "⌨",
     "mouse": "🖱",
@@ -32,28 +32,30 @@ class VideoWidget(QLabel):
             "border-radius: 10px;"
         )
         self._colors: dict[int, tuple] = {}
-        self._actions: list[dict] = []  # [{tool, params, reason, expire}, ...]
+        self._actions: list[dict] = []
+        self._last_frame_size: tuple = (640, 480)  # 原始帧尺寸，用于坐标映射
         self._show_empty_state()
 
-    def set_action(self, tool_name: str, parameters: dict, reason: str = "", duration: float = 2.0):
+    def set_action(self, tool_name: str, parameters: dict, reason: str = "",
+                   duration: float = 2.0, target_bbox: tuple | None = None):
         """设置要在画面上显示的决策动作。"""
         self._actions.append({
             "tool": tool_name,
             "params": parameters,
             "reason": reason,
+            "bbox": target_bbox,  # (x1,y1,x2,y2) 原始帧像素坐标
             "expire": time.time() + duration,
         })
-        # 最多保留 5 条
-        if len(self._actions) > 5:
-            self._actions = self._actions[-5:]
+        if len(self._actions) > 8:
+            self._actions = self._actions[-8:]
 
     def update_frame(self, frame: np.ndarray, result: DetectionResult):
         """绘制检测结果并更新显示。"""
+        self._last_frame_size = (frame.shape[1], frame.shape[0])
         display = frame.copy()
         self._draw_detections(display, result)
         self._draw_count_badge(display, result)
         pixmap = self._to_pixmap(display)
-        # 用 QPainter 在 pixmap 上绘制中文动作信息
         self._draw_actions_on_pixmap(pixmap)
         self.setPixmap(pixmap)
 
@@ -62,7 +64,6 @@ class VideoWidget(QLabel):
         self._show_empty_state()
 
     def _show_empty_state(self):
-        """显示空状态占位。"""
         self.setText("")
         size = self.size()
         w, h = max(size.width(), 640), max(size.height(), 480)
@@ -134,7 +135,6 @@ class VideoWidget(QLabel):
                         cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
     def _draw_count_badge(self, frame: np.ndarray, result: DetectionResult):
-        """右上角检测计数（纯英文，用 OpenCV 即可）。"""
         count = len(result.detections)
         if count == 0:
             return
@@ -153,17 +153,28 @@ class VideoWidget(QLabel):
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, (100, 220, 130), thickness, cv2.LINE_AA)
 
     def _to_pixmap(self, frame: np.ndarray) -> QPixmap:
-        """将 OpenCV 帧转为缩放后的 QPixmap。"""
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
         return pixmap.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
+    def _frame_to_pixmap_coords(self, fx: float, fy: float, pixmap_w: int, pixmap_h: int) -> tuple:
+        """将原始帧坐标转换为缩放后 pixmap 上的坐标。"""
+        fw, fh = self._last_frame_size
+        # 计算缩放比例（KeepAspectRatio）
+        scale = min(pixmap_w / fw, pixmap_h / fh)
+        # 缩放后的实际图像尺寸
+        sw = fw * scale
+        sh = fh * scale
+        # 居中偏移
+        ox = (pixmap_w - sw) / 2
+        oy = (pixmap_h - sh) / 2
+        return ox + fx * scale, oy + fy * scale
+
     def _draw_actions_on_pixmap(self, pixmap: QPixmap):
-        """用 QPainter 在 pixmap 左下角绘制决策动作（支持中文）。"""
+        """用 QPainter 在 pixmap 上绘制决策动作标签（定位到目标位置）。"""
         now = time.time()
-        # 清理过期动作
         self._actions = [a for a in self._actions if a["expire"] > now]
         if not self._actions:
             return
@@ -176,99 +187,122 @@ class VideoWidget(QLabel):
         font_main.setBold(True)
         font_detail = QFont("Microsoft YaHei", 9)
 
-        row_height = 28
-        pad = 8
-        margin = 10
-        box_w = min(320, pw - 20)
-
-        # 从底部往上逐条绘制
-        y_bottom = ph - margin
-        for action in reversed(self._actions):
+        for action in self._actions:
             tool = action["tool"]
             params = action["params"]
             reason = action["reason"]
+            bbox = action["bbox"]
 
-            # 格式化参数为可读文本
-            param_text = self._format_params(tool, params)
-            icon = _ACTION_ICONS.get(tool, "▶")
-
-            # 计算透明度（快过期时淡出）
+            # 计算透明度（淡出）
             remain = action["expire"] - now
             alpha = min(1.0, remain / 0.5) if remain < 0.5 else 1.0
-            alpha_int = int(alpha * 220)
+            alpha_int = int(alpha * 230)
 
-            # 总行数
-            lines = [f"{icon}  {param_text}"]
+            # 格式化文本
+            icon = _ACTION_ICONS.get(tool, "▶")
+            param_text = self._format_params(tool, params)
+            line1 = f"{icon} {param_text}"
+
+            # 确定绘制位置
+            if bbox:
+                # 有目标 bbox → 画在目标右侧/下方
+                bx1, by1, bx2, by2 = bbox
+                cx = (bx1 + bx2) / 2
+                cy = (by1 + by2) / 2
+                px, py = self._frame_to_pixmap_coords(bx2 + 5, by1, pw, ph)
+
+                # 画连接线：从目标中心到标签
+                pcx, pcy = self._frame_to_pixmap_coords(cx, cy, pw, ph)
+                pen = QPen(QColor(80, 200, 255, alpha_int), 1.5, Qt.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(int(pcx), int(pcy), int(px + 4), int(py + 14))
+
+                # 目标中心画十字准星
+                cross_size = 8
+                pen_cross = QPen(QColor(255, 80, 80, alpha_int), 2)
+                painter.setPen(pen_cross)
+                painter.drawLine(int(pcx - cross_size), int(pcy), int(pcx + cross_size), int(pcy))
+                painter.drawLine(int(pcx), int(pcy - cross_size), int(pcx), int(pcy + cross_size))
+            else:
+                # 无位置 → 画在左下角
+                px, py = 12, ph - 60
+
+            # 计算标签尺寸
+            fm_main = painter.fontMetrics()
+            painter.setFont(font_main)
+            fm_main = painter.fontMetrics()
+            tw1 = fm_main.horizontalAdvance(line1)
+
+            tw2 = 0
             if reason:
-                lines.append(f"    {reason}")
-            total_h = row_height * len(lines) + pad * 2
+                painter.setFont(font_detail)
+                fm_detail = painter.fontMetrics()
+                tw2 = fm_detail.horizontalAdvance(reason)
 
-            y_top = y_bottom - total_h
+            pad = 8
+            box_w = max(tw1, tw2) + pad * 2
+            row_h = 24
+            box_h = row_h + pad * 2 + (row_h if reason else 0)
+
+            # 防止超出画面边界
+            px = min(px, pw - box_w - 5)
+            py = max(py, 5)
+            px = max(px, 5)
+            if py + box_h > ph - 5:
+                py = ph - box_h - 5
 
             # 半透明背景
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(15, 15, 15, alpha_int))
-            painter.drawRoundedRect(QRectF(margin, y_top, box_w, total_h), 6, 6)
+            painter.drawRoundedRect(QRectF(px, py, box_w, box_h), 6, 6)
 
             # 左侧指示条
-            bar_color = QColor(80, 200, 255, alpha_int)
-            painter.setBrush(bar_color)
-            painter.drawRoundedRect(QRectF(margin, y_top, 4, total_h), 2, 2)
+            painter.setBrush(QColor(80, 200, 255, alpha_int))
+            painter.drawRoundedRect(QRectF(px, py, 4, box_h), 2, 2)
 
             # 第一行：动作
             painter.setFont(font_main)
             painter.setPen(QColor(80, 200, 255, alpha_int))
             painter.drawText(
-                int(margin + pad + 4), int(y_top + pad),
-                int(box_w - pad * 2), row_height,
+                int(px + pad + 4), int(py + pad),
+                int(box_w - pad * 2), row_h,
                 Qt.AlignLeft | Qt.AlignVCenter,
-                lines[0]
+                line1,
             )
 
             # 第二行：原因
-            if len(lines) > 1:
+            if reason:
                 painter.setFont(font_detail)
-                painter.setPen(QColor(180, 180, 180, alpha_int))
+                painter.setPen(QColor(200, 200, 200, alpha_int))
                 painter.drawText(
-                    int(margin + pad + 4), int(y_top + pad + row_height),
-                    int(box_w - pad * 2), row_height,
+                    int(px + pad + 4), int(py + pad + row_h),
+                    int(box_w - pad * 2), row_h,
                     Qt.AlignLeft | Qt.AlignVCenter,
-                    lines[1]
+                    reason,
                 )
-
-            y_bottom = y_top - 4  # 条目间距
 
         painter.end()
 
     @staticmethod
     def _format_params(tool: str, params: dict) -> str:
-        """将工具参数格式化为直观的显示文本。"""
         if tool == "keyboard":
             action = params.get("action", "press")
             key = params.get("key", "?")
-            action_labels = {"press": "按键", "hold": "长按", "release": "释放"}
-            return f"{action_labels.get(action, action)}  [ {key.upper()} ]"
+            labels = {"press": "按键", "hold": "长按", "release": "释放"}
+            return f"{labels.get(action, action)}  [ {key.upper()} ]"
         elif tool == "mouse":
             action = params.get("action", "click")
             x, y = params.get("x", 0), params.get("y", 0)
-            action_labels = {"click": "点击", "move": "移动", "right_click": "右键", "double_click": "双击"}
-            label = action_labels.get(action, action)
+            labels = {"click": "点击", "move": "移动", "right_click": "右键", "double_click": "双击"}
+            label = labels.get(action, action)
             if x or y:
                 return f"{label}  ({x}, {y})"
             return label
         elif tool == "api_call":
-            url = params.get("url", "")
-            return f"API → {url[:40]}"
+            return f"API → {params.get('url', '')[:40]}"
         elif tool == "shell":
-            cmd = params.get("command", "")
-            return f"$ {cmd[:40]}"
-        else:
-            return f"{tool}: {params}"
-
-    def _show_image(self, frame: np.ndarray):
-        """旧接口，保留兼容。"""
-        pixmap = self._to_pixmap(frame)
-        self.setPixmap(pixmap)
+            return f"$ {params.get('command', '')[:40]}"
+        return f"{tool}: {params}"
 
     def _get_color(self, class_id: int) -> tuple:
         if class_id not in self._colors:

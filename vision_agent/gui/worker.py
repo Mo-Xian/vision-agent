@@ -17,7 +17,7 @@ class DetectionWorker(QThread):
     fps_updated = Signal(float, float)                  # (fps, inference_ms)
     agent_stats_updated = Signal(dict)                  # Agent 统计更新
     decision_log = Signal(str)                          # 决策日志
-    action_fired = Signal(str, dict, str)               # (tool_name, parameters, reason)
+    action_fired = Signal(str, dict, str, object)        # (tool_name, parameters, reason, target_bbox)
 
     def __init__(self, source: BaseSource, detector: Detector,
                  agents: list[BaseAgent] | None = None,

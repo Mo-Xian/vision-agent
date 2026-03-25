@@ -88,7 +88,7 @@ class ActionAgent(LoggingMixin, BaseAgent):
                     self._emit_log(f"[执行] {action.tool_name} -> 成功")
                     if self._on_action:
                         try:
-                            self._on_action(action.tool_name, action.parameters, action.reason)
+                            self._on_action(action.tool_name, action.parameters, action.reason, action.target_bbox)
                         except Exception:
                             pass
                 else:

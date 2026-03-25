@@ -15,15 +15,19 @@ class Action:
     reason: str = ""            # 决策理由（调试用）
     priority: int = 0           # 优先级，数值越大越优先
     confidence: float = 1.0     # 决策置信度
+    target_bbox: tuple | None = None  # 触发此动作的目标位置 (x1,y1,x2,y2) 像素坐标
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "tool_name": self.tool_name,
             "parameters": self.parameters,
             "reason": self.reason,
             "priority": self.priority,
             "confidence": self.confidence,
         }
+        if self.target_bbox:
+            d["target_bbox"] = list(self.target_bbox)
+        return d
 
 
 class LoggingMixin:

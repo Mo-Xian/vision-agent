@@ -1106,6 +1106,18 @@ class MainWindow(QMainWindow):
 
         if engine_type == "rule":
             engine = RuleEngine()
+            # 默认规则：检测到目标时攻击，附带目标位置
+            def _rule_attack_on_detect(result, state):
+                if not result.detections:
+                    return None
+                det = result.detections[0]
+                return Action(
+                    tool_name="keyboard",
+                    parameters={"action": "press", "key": "a"},
+                    reason=f"发现 {det.class_name} ({det.confidence:.0%})",
+                    target_bbox=det.bbox,
+                )
+            engine.add_rule("attack_on_detect", _rule_attack_on_detect)
         elif engine_type == "trained":
             model_dir = self.trained_model_dir.text().strip() or "runs/decision/exp1"
             # 解析动作映射
@@ -1164,16 +1176,25 @@ class MainWindow(QMainWindow):
                 key_map = profile.action_key_map.get(first_action, {})
                 key = key_map.get("key", first_action)
                 def _make_rule(k):
-                    return lambda r, s: Action(
-                        tool_name="keyboard",
-                        parameters={"action": "press", "key": k},
-                    ) if r.detections else None
+                    def _rule(r, s):
+                        if not r.detections:
+                            return None
+                        det = r.detections[0]
+                        return Action(
+                            tool_name="keyboard",
+                            parameters={"action": "press", "key": k},
+                            reason=f"发现 {det.class_name}",
+                            target_bbox=det.bbox,
+                        )
+                    return _rule
                 micro.add_rule("default_action", _make_rule(key))
                 self._log(f"分层引擎: 默认规则 → {first_action} ({key})")
             else:
                 micro.add_rule("detect_any", lambda r, s: Action(
                     tool_name="keyboard",
                     parameters={"action": "press", "key": "space"},
+                    reason=f"发现 {r.detections[0].class_name}" if r.detections else "",
+                    target_bbox=r.detections[0].bbox if r.detections else None,
                 ) if r.detections else None)
                 self._log("分层引擎: 默认规则 → space（未配置 Profile）")
 
@@ -1333,17 +1354,17 @@ class MainWindow(QMainWindow):
         self._log("检测已停止")
         self._worker = None
 
-    def _action_callback(self, tool_name: str, parameters: dict, reason: str):
+    def _action_callback(self, tool_name: str, parameters: dict, reason: str, target_bbox=None):
         if self._worker:
-            self._worker.action_fired.emit(tool_name, parameters, reason)
+            self._worker.action_fired.emit(tool_name, parameters, reason, target_bbox)
 
     def _decision_log_callback(self, msg: str):
         if self._worker:
             self._worker.decision_log.emit(msg)
 
-    @Slot(str, dict, str)
-    def _on_action_fired(self, tool_name: str, parameters: dict, reason: str):
-        self.video_widget.set_action(tool_name, parameters, reason)
+    @Slot(str, dict, str, object)
+    def _on_action_fired(self, tool_name: str, parameters: dict, reason: str, target_bbox):
+        self.video_widget.set_action(tool_name, parameters, reason, target_bbox=target_bbox)
 
     @Slot(str)
     def _on_decision_log(self, msg: str):
