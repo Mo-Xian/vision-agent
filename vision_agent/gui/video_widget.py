@@ -25,7 +25,7 @@ class VideoWidget(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAlignment(Qt.AlignCenter)
-        self.setMinimumSize(640, 480)
+        self.setMinimumSize(320, 240)
         self.setStyleSheet(
             f"background-color: {COLORS['bg_deep']}; "
             f"border: 1px solid {COLORS['border']}; "
