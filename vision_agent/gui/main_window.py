@@ -40,8 +40,26 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Vision Agent")
-        self.setMinimumSize(1100, 700)
-        self.resize(1400, 820)
+
+        # 根据屏幕尺寸自适应窗口大小
+        from PySide6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            avail = screen.availableGeometry()
+            w = min(1400, int(avail.width() * 0.85))
+            h = min(820, int(avail.height() * 0.85))
+            min_w = min(1100, int(avail.width() * 0.7))
+            min_h = min(700, int(avail.height() * 0.7))
+            self.setMinimumSize(min_w, min_h)
+            self.resize(w, h)
+            # 居中显示
+            self.move(
+                avail.x() + (avail.width() - w) // 2,
+                avail.y() + (avail.height() - h) // 2,
+            )
+        else:
+            self.setMinimumSize(800, 500)
+            self.resize(1200, 720)
         self.setStyleSheet(MAIN_STYLESHEET)
         self.setAcceptDrops(True)
 
