@@ -194,7 +194,7 @@ class MainWindow(QMainWindow):
         form.setSpacing(6)
 
         self.source_type = QComboBox()
-        self.source_type.addItems(["screen", "camera", "video", "image"])
+        self.source_type.addItems(["screen", "camera", "video", "image", "stream"])
         self.source_type.currentTextChanged.connect(self._on_source_type_changed)
         form.addRow("类型", self.source_type)
 
@@ -235,6 +235,20 @@ class MainWindow(QMainWindow):
         self.monitor_num = QSpinBox()
         self.monitor_num.setRange(1, 5)
         layout.addWidget(self.monitor_num)
+
+        # 实时流
+        self.stream_label = QLabel("流地址")
+        layout.addWidget(self.stream_label)
+        self.stream_input = QLineEdit()
+        self.stream_input.setPlaceholderText(
+            "rtsp://user:pass@ip:554/stream  或  B站直播间号(如 12345)"
+        )
+        layout.addWidget(self.stream_input)
+        self.stream_hint = QLabel(
+            "支持: RTSP / HTTP-FLV / HLS(m3u8) / B站直播间号"
+        )
+        self.stream_hint.setStyleSheet("color: gray; font-size: 11px;")
+        layout.addWidget(self.stream_hint)
 
         layout.addStretch()
         self.config_tabs.addTab(tab, "输入源")
@@ -1015,6 +1029,7 @@ class MainWindow(QMainWindow):
         is_camera = source_type == "camera"
         is_screen = source_type == "screen"
         is_image = source_type == "image"
+        is_stream = source_type == "stream"
 
         self.path_label.setVisible(is_video or is_image)
         self.path_input.setVisible(is_video or is_image)
@@ -1030,6 +1045,9 @@ class MainWindow(QMainWindow):
         self.camera_device.setVisible(is_camera)
         self.monitor_label.setVisible(is_screen)
         self.monitor_num.setVisible(is_screen)
+        self.stream_label.setVisible(is_stream)
+        self.stream_input.setVisible(is_stream)
+        self.stream_hint.setVisible(is_stream)
 
     def _browse_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1056,6 +1074,14 @@ class MainWindow(QMainWindow):
                 "path": self.path_input.text().strip(),
                 "loop": self.loop_combo.currentIndex() == 1,
             }
+        elif source_type == "stream":
+            raw = self.stream_input.text().strip()
+            # 纯数字视为B站直播间号
+            if raw.isdigit():
+                url = f"bilibili://{raw}"
+            else:
+                url = raw
+            config["stream"] = {"url": url}
         return config
 
     @Slot(str)
@@ -1460,6 +1486,7 @@ class MainWindow(QMainWindow):
         s.setValue("source/loop", self.loop_combo.currentIndex())
         s.setValue("source/camera", self.camera_device.value())
         s.setValue("source/monitor", self.monitor_num.value())
+        s.setValue("source/stream_url", self.stream_input.text())
         s.setValue("detector/model", self.model_combo.currentText())
         s.setValue("detector/confidence", self.conf_spin.value())
         s.setValue("detector/imgsz", self.imgsz_combo.currentText())
@@ -1491,6 +1518,8 @@ class MainWindow(QMainWindow):
             self.camera_device.setValue(int(s.value("source/camera", 0)))
         if s.value("source/monitor") is not None:
             self.monitor_num.setValue(int(s.value("source/monitor", 1)))
+        if s.value("source/stream_url"):
+            self.stream_input.setText(s.value("source/stream_url"))
         if s.value("detector/model"):
             self.model_combo.setEditText(s.value("detector/model"))
         if s.value("detector/confidence") is not None:

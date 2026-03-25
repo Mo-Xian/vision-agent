@@ -5,6 +5,7 @@ from .camera import CameraSource
 from .screen import ScreenSource
 from .video_file import VideoFileSource
 from .image import ImageSource
+from .stream import StreamSource
 
 
 def create_source(config: dict) -> BaseSource:
@@ -22,5 +23,8 @@ def create_source(config: dict) -> BaseSource:
     elif source_type == "image":
         cfg = config.get("image", {})
         return ImageSource(**cfg)
+    elif source_type == "stream":
+        cfg = config.get("stream", {})
+        return StreamSource(**cfg)
     else:
         raise ValueError(f"未知的视频源类型: {source_type}")
