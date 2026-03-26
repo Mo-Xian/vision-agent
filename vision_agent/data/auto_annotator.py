@@ -7,7 +7,6 @@
   2. 逐帧标注: 每帧单独调用一次 LLM（兼容旧模式）
 
 YOLO 检测为可选辅助，send_image=True 时 LLM 直接看截图。
-产出与 DataRecorder 格式一致，可直接用于 DecisionTrainer 训练。
 """
 
 import base64
@@ -19,7 +18,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from ..core.state import StateManager
 from ..decision.llm_provider import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -274,7 +272,6 @@ class AutoAnnotator:
         # Tool Calling 配置
         self.use_tool_calling = use_tool_calling
 
-        self._state_manager = StateManager()
         self._stop_flag = False
         self._log_callback = None
         self._last_request_time = 0.0
@@ -350,8 +347,9 @@ class AutoAnnotator:
                     scene_summary = ""
                     if self.detector is not None:
                         result = self.detector.detect(frame)
-                        state = self._state_manager.update(result)
-                        scene_summary = state.scene_summary
+                        if hasattr(result, 'detections') and result.detections:
+                            names = [d.class_name for d in result.detections[:5]]
+                            scene_summary = f"检测到: {', '.join(names)}"
 
                     # 无截图模式下，没有检测结果则跳过
                     if not self.send_image and (result is None or not result.detections):

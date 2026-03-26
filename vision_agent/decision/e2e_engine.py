@@ -23,9 +23,9 @@ class E2EEngine(DecisionEngine):
     截图 → 特征 → 动作 的完整推理。
 
     用法:
-        engine = E2EEngine(model_dir="runs/e2e/exp1")
+        engine = E2EEngine(model_dir="runs/workshop/exp1/model")
         engine.on_start()
-        action = engine.decide(detection_result, state, frame=frame)
+        actions = engine.decide(embedding=frame)
     """
 
     name = "e2e"
@@ -46,11 +46,9 @@ class E2EEngine(DecisionEngine):
 
     def on_start(self):
         """加载编码器和模型。"""
-        # 加载视觉编码器
         from ..core.vision_encoder import VisionEncoder
         self._encoder = VisionEncoder()
 
-        # 加载模型
         if not self._model_dir:
             logger.warning("E2EEngine: 未指定模型目录")
             return
@@ -89,20 +87,21 @@ class E2EEngine(DecisionEngine):
         self._model = None
         self._encoder = None
 
-    def decide(self, detection_result, state, **kwargs) -> Action:
+    def decide(self, embedding=None, **context) -> list[Action]:
         """端到端决策：从画面帧直接推理动作。
 
-        需要 kwargs['frame'] 传入原始 BGR 帧。
+        Args:
+            embedding: BGR 帧 (numpy array) 或预计算的嵌入向量
         """
-        frame = kwargs.get("frame")
+        frame = embedding
         if frame is None or self._model is None or self._encoder is None:
-            return Action(tool_name="idle", confidence=0.0, reason="E2E 引擎未就绪")
+            return [Action(name="idle", confidence=0.0, reason="E2E 引擎未就绪")]
 
-        # 编码
-        embedding = self._encoder.encode(frame)
-        tensor = torch.tensor(embedding, dtype=torch.float32).unsqueeze(0)
+        # 如果传入的是原始帧（3D），先编码
+        if isinstance(frame, np.ndarray) and frame.ndim == 3:
+            frame = self._encoder.encode(frame)
 
-        # 推理
+        tensor = torch.tensor(frame, dtype=torch.float32).unsqueeze(0)
         action_idx, confidence = self._model.predict_action(tensor)
 
         if action_idx < len(self._action_list):
@@ -110,19 +109,17 @@ class E2EEngine(DecisionEngine):
         else:
             action_name = "idle"
 
-        # 置信度过低时 idle
         if confidence < self._confidence_threshold:
-            return Action(
-                tool_name="idle", confidence=confidence,
+            return [Action(
+                name="idle", confidence=confidence,
                 reason=f"置信度不足 ({confidence:.2f} < {self._confidence_threshold})",
-            )
+            )]
 
-        # 映射到按键
         key_info = self._action_key_map.get(action_name, {})
 
-        return Action(
-            tool_name=action_name,
+        return [Action(
+            name=action_name,
             confidence=confidence,
             reason=f"E2E 视觉决策 (conf={confidence:.2f})",
             parameters={"key": key_info.get("key", "")} if key_info else {},
-        )
+        )]

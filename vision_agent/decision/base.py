@@ -3,35 +3,27 @@
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from ..core.detector import DetectionResult
-from ..core.state import SceneState
 
 
 @dataclass
 class Action:
     """决策引擎输出的动作指令。"""
-    tool_name: str              # 要调用的工具名
-    parameters: dict = field(default_factory=dict)  # 工具参数
-    reason: str = ""            # 决策理由（调试用）
-    priority: int = 0           # 优先级，数值越大越优先
-    confidence: float = 1.0     # 决策置信度
-    target_bbox: tuple | None = None  # 触发此动作的目标位置 (x1,y1,x2,y2) 像素坐标
+    name: str                   # 动作名（如 attack, defend, idle）
+    parameters: dict = field(default_factory=dict)
+    reason: str = ""
+    confidence: float = 1.0
 
     def to_dict(self) -> dict:
-        d = {
-            "tool_name": self.tool_name,
+        return {
+            "name": self.name,
             "parameters": self.parameters,
             "reason": self.reason,
-            "priority": self.priority,
             "confidence": self.confidence,
         }
-        if self.target_bbox:
-            d["target_bbox"] = list(self.target_bbox)
-        return d
 
 
 class LoggingMixin:
-    """统一的日志回调 mixin，消除各模块重复的 _emit_log/_log 实现。"""
+    """统一的日志回调 mixin。"""
 
     _on_log: "callable | None" = None
 
@@ -48,17 +40,14 @@ class LoggingMixin:
 
 
 class DecisionEngine(ABC):
-    """决策引擎基类。接收检测结果和场景状态，输出动作指令。"""
+    """决策引擎基类。接收视觉嵌入，输出动作。"""
 
     @abstractmethod
-    def decide(self, result: DetectionResult, state: SceneState) -> list[Action]:
-        """根据检测结果和场景状态做出决策。
-
-        返回动作列表，空列表表示不执行任何动作。
-        """
+    def decide(self, embedding, **context) -> list[Action]:
+        """根据视觉嵌入做出决策。"""
 
     def configure(self, **kwargs) -> None:
-        """运行时调整配置。子类可覆盖。"""
+        """运行时调整配置。"""
 
     def on_start(self) -> None:
         """引擎启动时调用。"""
