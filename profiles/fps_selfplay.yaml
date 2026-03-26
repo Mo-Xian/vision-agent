@@ -1,0 +1,94 @@
+# FPS 游戏自对弈配置示例（和平精英 / CF 手游等）
+# 复制此文件并修改坐标即可适配你的游戏
+
+name: fps_selfplay
+display_name: FPS 自对弈
+game_type: fps
+
+# ── 触控区域 ──
+# 所有坐标为归一化值 (0~1)，横屏模式
+# type 字段: tap(点击) / swipe(滑动) / hold(长按)
+touch_zones:
+  move:
+    x: 0.13
+    y: 0.72
+    r: 0.10
+    type: swipe
+    description: 左侧摇杆
+
+  aim:
+    x: 0.70
+    y: 0.50
+    r: 0.20
+    type: swipe
+    description: 右侧视角区
+
+  fire:
+    x: 0.92
+    y: 0.65
+    r: 0.06
+    type: tap
+    description: 开火
+
+  scope:
+    x: 0.88
+    y: 0.45
+    r: 0.05
+    type: tap
+    description: 开镜
+
+  reload:
+    x: 0.82
+    y: 0.80
+    r: 0.04
+    type: tap
+    description: 换弹
+
+  crouch:
+    x: 0.75
+    y: 0.85
+    r: 0.04
+    type: tap
+    description: 蹲下
+
+  jump:
+    x: 0.90
+    y: 0.85
+    r: 0.04
+    type: tap
+    description: 跳跃
+
+# ── 奖励检测区域 ──
+reward_regions:
+  my_hp:
+    left: 0.03
+    top: 0.90
+    right: 0.20
+    bottom: 0.96
+
+# ── 奖励值 ──
+rewards:
+  attack: 3.0
+  damage: -1.5
+  death: -15.0
+  win: 100.0
+  lose: -100.0
+  idle_penalty: -0.1
+  action_bonus: 0.05
+
+# ── DQN 超参 ──
+dqn:
+  lr: 0.0005
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay: 0.997
+  buffer_capacity: 50000
+  batch_size: 64
+
+# ── 状态检测（无 ONNX 模型，使用像素启发式） ──
+detection:
+  start_model: ""
+  death_model: ""
+
+selfplay_output: runs/selfplay/fps

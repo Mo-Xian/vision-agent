@@ -21,6 +21,7 @@ venv/
 # Datasets & training data (large/private)
 datasets/
 data/recordings/
+recordings/
 
 # Training runs & outputs
 runs/

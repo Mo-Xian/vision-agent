@@ -1,21 +1,23 @@
-"""学习管线：编排 分析→标注→训练→强化 全流程。
+"""学习管线：录制人类操作 → 行为克隆训练 → 伪标签扩展。
 
-核心理念："像人看视频学习"——
-  1. 看视频（LLM 直接看截图，分析场景和内容）
-  2. LLM 标注帧数据（积累决策经验）
-  3. 视觉编码 + 标签传播 + MLP 训练
-  4. 策略梯度 RL（可选）
-  5. 产出可用模型和 Profile
+流程：
+  1. 动作发现 — LLM 分析按键+画面，识别语义动作（可选）
+  2. 训练     — MobileNetV3 编码 + MLP 行为克隆
+  3. RL 微调  — 策略梯度强化（可选）
+  + 教练诊断 — LLM 分析模型弱点（可选）
+  + 伪标签扩展 — 用已有模型标注新视频，高置信度样本扩充数据集
 """
 
 import json
 import logging
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 from ..decision.base import LoggingMixin
-from .video_analyzer import VideoAnalyzer, VideoInsight
 
 logger = logging.getLogger(__name__)
 
@@ -24,48 +26,32 @@ logger = logging.getLogger(__name__)
 class LearningResult:
     """学习管线的完整产出。"""
     run_dir: str = ""
-    insight: VideoInsight | None = None
+    data_source: str = "recording"
     annotated_count: int = 0
     model_dir: str = ""
     rl_dir: str = ""
     profile_path: str = ""
     metrics: dict = field(default_factory=dict)
     phases: dict = field(default_factory=dict)
+    coach_advice: dict = field(default_factory=dict)
     success: bool = False
 
     def to_dict(self) -> dict:
         return {
             "run_dir": self.run_dir,
-            "insight": self.insight.to_dict() if self.insight else None,
+            "data_source": self.data_source,
             "annotated_count": self.annotated_count,
             "model_dir": self.model_dir,
             "rl_dir": self.rl_dir,
             "profile_path": self.profile_path,
             "metrics": self.metrics,
+            "coach_advice": self.coach_advice,
             "success": self.success,
         }
 
 
 class LearningPipeline(LoggingMixin):
-    """端到端学习管线：视频 → 分析 → 标注 → 训练 → 强化 → 模型。
-
-    4 个核心阶段:
-        1. Analyze  — LLM 视觉分析视频内容
-        2. Annotate — LLM 逐帧标注决策数据
-        3. Train    — 视觉编码 + 标签传播 + MLP 训练
-        4. Reinforce — 策略梯度 RL（可选）
-
-    用法:
-        pipeline = LearningPipeline(
-            llm_provider_name="minimax",
-            llm_api_key=api_key,
-            llm_model="MiniMax-M2.7",
-        )
-        result = pipeline.learn_from_videos(
-            video_paths=["video1.mp4"],
-            description="王者荣耀5v5",
-        )
-    """
+    """行为克隆学习管线：录制数据 → 动作发现 → 训练 → RL微调。"""
 
     def __init__(
         self,
@@ -108,181 +94,123 @@ class LearningPipeline(LoggingMixin):
             )
         return self._provider
 
-    def learn_from_videos(
+    # ================================================================
+    #  行为克隆训练（录制数据）
+    # ================================================================
+
+    def learn_from_recordings(
         self,
-        video_paths: list[str],
+        recording_dirs: list[str],
         description: str = "",
-        sample_count: int = 300,
         epochs: int = 100,
-        rl_steps: int = 2000,
-        send_image: bool = True,
-        analyze_samples: int = 20,
-        batch_size: int = 5,
+        rl_steps: int = 0,
         knowledge: str = "",
     ) -> LearningResult:
-        """从视频列表学习，完整执行 4 阶段管线。"""
+        """从录制数据学习（行为克隆模式）。
+
+        3 个阶段:
+            1. 动作发现 — LLM 分析按键+画面，识别语义动作
+            2. 训练     — MobileNetV3 编码 + MLP 行为克隆
+            3. RL 微调  — 策略梯度强化（可选）
+        """
         self._stop = False
         run_dir = self._output_dir / time.strftime("%Y%m%d_%H%M%S")
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        result = LearningResult(run_dir=str(run_dir))
-        provider = self._create_provider()
+        result = LearningResult(run_dir=str(run_dir), data_source="recording")
 
-        # 过滤有效视频
-        video_exts = {'.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv', '.ts', '.m4v'}
-        video_files = [f for f in video_paths if Path(f).suffix.lower() in video_exts]
-        if not video_files:
-            self._emit_log("[错误] 没有可处理的视频文件")
+        # 验证录制目录
+        valid_dirs = []
+        for d in recording_dirs:
+            dp = Path(d)
+            if (dp / "recording.mp4").exists() and (dp / "actions.jsonl").exists():
+                valid_dirs.append(d)
+            else:
+                self._emit_log(f"[跳过] 录制目录不完整: {d}")
+
+        if not valid_dirs:
+            self._emit_log("[错误] 没有有效的录制数据")
             return result
 
         try:
-            # ── Phase 1: 分析视频 ──
-            self._emit_log("=" * 50)
-            self._emit_log(f"Phase 1/4: 分析视频 ({len(video_files)} 个)")
-            self._emit_log("  模式: LLM 视觉分析")
-            self._progress("analyze", 0.0)
+            # LLM 用于动作发现和训练诊断（可选）
+            try:
+                provider = self._create_provider()
+            except Exception:
+                provider = None
 
-            analyzer = VideoAnalyzer(
-                provider=provider,
-                detector=None,
-                sample_count=analyze_samples,
-                knowledge=knowledge,
-                on_log=self._on_log,
+            # ── Phase 1: 动作发现 ──
+            self._emit_log("=" * 50)
+            self._emit_log(f"Phase 1/3: 动作发现 ({len(valid_dirs)} 个录制)")
+            self._progress("discover", 0.0)
+
+            actions, action_map, action_descriptions = self._discover_actions(
+                valid_dirs, provider, knowledge
             )
-            insights = analyzer.analyze_batch(video_files)
-            insight = analyzer.merge_insights(insights) if insights else VideoInsight()
-            result.insight = insight
-            result.phases["analyze"] = insight.to_dict()
-
-            actions = insight.suggested_actions or ["attack", "defend", "idle"]
-            action_descriptions = insight.action_descriptions or {}
-            if "idle" not in actions:
-                actions.append("idle")
-
-            self._emit_log(f"  场景: {insight.scene_type}")
-            self._emit_log(f"  动作集: {actions}")
-            self._emit_log(f"  分析: {insight.analysis_summary[:200]}")
+            result.phases["discover"] = {
+                "actions": actions,
+                "action_map": action_map,
+            }
 
             if self._stop:
                 return result
 
-            # ── Phase 2: LLM 标注 ──
-            self._emit_log("=" * 50)
-            self._emit_log(f"Phase 2/4: LLM 标注 ({len(video_files)} 个视频)")
-            self._progress("annotate", 0.2)
-
-            annotate_dir = run_dir / "annotations"
-            annotate_dir.mkdir(exist_ok=True)
-            total_annotated = 0
-
-            from ..data.auto_annotator import AutoAnnotator
-            from ..core.keyframe import KeyFrameSampler
-
-            # 关键帧检测
-            video_keyframes = {}
-            self._emit_log("  [关键帧] 检测高价值帧...")
-            for vpath in video_files:
-                target_per_video = max(sample_count // len(video_files), 30)
-                sampler = KeyFrameSampler(
-                    target_count=target_per_video,
-                    on_log=self._on_log,
-                )
-                try:
-                    indices = sampler.sample_indices(vpath)
-                    video_keyframes[vpath] = indices
-                    self._emit_log(f"  [关键帧] {Path(vpath).name}: {len(indices)} 帧")
-                except Exception as ex:
-                    self._emit_log(f"  [关键帧] {Path(vpath).name} 失败: {ex}")
-                    video_keyframes[vpath] = None
-
-            for i, vpath in enumerate(video_files):
-                if self._stop:
-                    break
-
-                self._emit_log(f"  标注 [{i+1}/{len(video_files)}]: {Path(vpath).name}")
-                save_path = str(annotate_dir / f"annotated_{i}.jsonl")
-
-                target_frames = max(sample_count // len(video_files), 20)
-                kf_indices = video_keyframes.get(vpath)
-
-                annotator = AutoAnnotator(
-                    video_path=vpath,
-                    provider=provider,
-                    actions=actions,
-                    detector=None,
-                    action_descriptions=action_descriptions,
-                    sample_interval=10,
-                    max_frames=target_frames,
-                    send_image=send_image,
-                    use_tool_calling=True,
-                    batch_size=batch_size,
-                    knowledge=knowledge,
-                    keyframe_indices=kf_indices,
-                    progress_callback=lambda cur, total, ann: self._progress(
-                        "annotate", 0.2 + 0.3 * ((i + cur / max(total, 1)) / len(video_files))
-                    ),
-                )
-                if self._on_log:
-                    annotator.set_log_callback(self._on_log)
-
-                try:
-                    stats = annotator.run(save_path=save_path)
-                    total_annotated += stats["annotated"]
-                    self._emit_log(f"  标注完成: {stats['annotated']} 条")
-                except Exception as e:
-                    self._emit_log(f"  标注失败: {e}")
-
-            result.annotated_count = total_annotated
-            result.phases["annotate"] = {"total_annotated": total_annotated}
-
-            if total_annotated < 10:
-                self._emit_log("[终止] 标注数据太少 (<10)，无法训练")
-                return result
-
-            if self._stop:
-                return result
-
+            # ── Phase 2: 训练 ──
             model_dir = str(run_dir / "model")
-
-            # ── Phase 3: 端到端训练 ──
             self._emit_log("=" * 50)
-            self._emit_log("Phase 3/4: 端到端视觉编码 + MLP 训练")
-            self._progress("encode", 0.5)
+            self._emit_log("Phase 2/3: 行为克隆训练")
+            self._progress("train", 0.2)
 
-            e2e_result = self._run_e2e_train(
-                video_files, annotate_dir, actions, model_dir,
-                sample_interval=10,
-                max_frames=max(sample_count // max(len(video_files), 1), 20),
-                epochs=epochs,
+            metrics = self._train_from_recordings(
+                valid_dirs, actions, action_map, model_dir, epochs,
             )
-            metrics = e2e_result
             result.metrics = metrics
             result.model_dir = model_dir
             result.phases["train"] = metrics
+            result.annotated_count = metrics.get("total_samples", 0)
 
             if metrics.get("error"):
-                self._emit_log(f"  端到端训练失败: {metrics['error']}")
+                self._emit_log(f"  训练失败: {metrics['error']}")
                 return result
+
             self._emit_log(f"  训练完成: val_acc={metrics.get('best_val_acc', 0):.3f}")
 
-            # Phase 4: RL 强化
+            # ── Phase 3: RL（可选） ──
             if rl_steps > 0 and not self._stop:
                 self._emit_log("=" * 50)
-                self._emit_log(f"Phase 4/4: 端到端 RL 强化 ({rl_steps} 步)")
+                self._emit_log(f"Phase 3/3: RL 微调 ({rl_steps} 步)")
                 self._progress("rl", 0.75)
-                rl_result = self._run_e2e_rl(
-                    video_files, actions, model_dir, rl_steps,
-                )
+
+                video_files = [str(Path(d) / "recording.mp4") for d in valid_dirs]
+                rl_result = self._run_e2e_rl(video_files, actions, model_dir, rl_steps)
                 result.rl_dir = model_dir
                 result.phases["rl"] = rl_result
-                self._emit_log(f"  RL 完成: {rl_result.get('total_steps', 0)} 步")
             else:
-                self._emit_log("Phase 4/4: 跳过 RL")
+                self._emit_log("Phase 3/3: 跳过 RL")
+
+            # ── 教练诊断（LLM 可用时） ──
+            if provider and not self._stop:
+                self._emit_log("─" * 30)
+                self._emit_log("[教练] 训练诊断...")
+                from ..decision.llm_coach import LLMCoach
+                coach = LLMCoach(provider, knowledge, on_log=self._on_log)
+                advice = coach.diagnose_training(
+                    metrics,
+                    metrics.get("action_dist"),
+                )
+                result.coach_advice = {
+                    "weaknesses": advice.weaknesses,
+                    "suggestions": advice.suggestions,
+                    "focus_areas": advice.focus_areas,
+                    "overall_assessment": advice.overall_assessment,
+                }
+                if advice.suggestions:
+                    self._emit_log(f"[教练建议] {'; '.join(advice.suggestions[:3])}")
 
             # ── 导出 Profile ──
             profile_path = self._export_profile(
-                run_dir, description or insight.scene_type,
-                actions, action_descriptions, model_dir, insight,
+                run_dir, description, actions, action_descriptions,
+                model_dir, action_map,
             )
             result.profile_path = profile_path
             result.success = True
@@ -297,89 +225,99 @@ class LearningPipeline(LoggingMixin):
             self._emit_log(f"[错误] 学习管线异常: {e}")
             logger.exception("LearningPipeline error")
 
-        # 保存会话记录
-        record_path = run_dir / "session.json"
-        with open(record_path, "w", encoding="utf-8") as f:
-            json.dump(result.to_dict(), f, ensure_ascii=False, indent=2, default=str)
-
+        self._save_session(run_dir, result)
         return result
 
-    def _run_e2e_train(
-        self, video_files, annotate_dir, actions, model_dir,
-        sample_interval=10, max_frames=300, epochs=100,
-        encode_interval=3, propagate_radius=5,
+    def _discover_actions(
+        self, recording_dirs, provider, knowledge
+    ) -> tuple[list[str], dict, dict]:
+        """从录制数据发现动作集。"""
+        if provider:
+            from ..decision.llm_coach import LLMCoach
+            coach = LLMCoach(provider, knowledge, on_log=self._on_log)
+            result = coach.discover_actions(recording_dirs[0])
+            actions = result.get("actions", ["idle"])
+            action_map = result.get("action_map", {})
+            action_descriptions = result.get("action_descriptions", {})
+        else:
+            # 无 LLM：直接从录制的按键提取动作
+            key_set = set()
+            for d in recording_dirs:
+                actions_path = Path(d) / "actions.jsonl"
+                if actions_path.exists():
+                    with open(actions_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                s = json.loads(line.strip())
+                                key = s.get("human_action", {}).get("key", "")
+                                if key:
+                                    key_set.add(key)
+                            except Exception:
+                                pass
+            actions = sorted(key_set)
+            if "idle" not in actions:
+                actions.append("idle")
+            action_map = {a: a for a in actions if a != "idle"}
+            action_descriptions = {}
+
+        self._emit_log(f"  动作集: {actions}")
+        return actions, action_map, action_descriptions
+
+    def _train_from_recordings(
+        self, recording_dirs, actions, action_map, model_dir, epochs,
     ) -> dict:
-        """端到端训练：视频密集抽帧 → 视觉编码 → 标签传播 → 训练 MLP。"""
+        """从录制数据训练 E2E 模型。"""
         import cv2
         from ..core.vision_encoder import VisionEncoder
         from ..data.e2e_dataset import E2EDataset
         from ..data.e2e_trainer import E2ETrainer
 
-        # ── 加载 LLM 标注 ──
-        annotated_actions = {}
-        for jsonl_file in sorted(Path(annotate_dir).glob("*.jsonl")):
-            with open(jsonl_file, "r", encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        sample = json.loads(line.strip())
-                        fid = sample.get("frame_id", 0)
-                        action = sample.get("human_action", {}).get("key", "")
-                        if action:
-                            annotated_actions[fid] = action
-                    except Exception:
-                        pass
-
-        if not annotated_actions:
-            self._emit_log("[E2E] 无标注数据可用")
-            return {"error": "no_annotations"}
-
-        self._emit_log(f"[E2E] LLM 标注: {len(annotated_actions)} 帧")
-
-        # ── 标签传播 ──
-        sorted_fids = sorted(annotated_actions.keys())
-
-        def get_label_for_frame(fid: int) -> str | None:
-            import bisect
-            pos = bisect.bisect_left(sorted_fids, fid)
-            best_dist = float('inf')
-            best_label = None
-            for idx in (pos - 1, pos):
-                if 0 <= idx < len(sorted_fids):
-                    dist = abs(fid - sorted_fids[idx])
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_label = annotated_actions[sorted_fids[idx]]
-            if best_dist <= propagate_radius * encode_interval:
-                return best_label
-            return None
-
-        # ── 视觉编码 ──
-        self._emit_log("[E2E] 加载视觉编码器 (MobileNetV3-Small)...")
         encoder = VisionEncoder()
-
         dataset = E2EDataset()
         dataset.set_actions(actions)
 
-        total_encoded = 0
-        total_propagated = 0
+        total_samples = 0
 
-        for vi, vpath in enumerate(video_files):
+        for di, rec_dir in enumerate(recording_dirs):
             if self._stop:
                 break
 
-            cap = cv2.VideoCapture(vpath)
+            rec_path = Path(rec_dir)
+            video_path = str(rec_path / "recording.mp4")
+            actions_path = str(rec_path / "actions.jsonl")
+
+            # 加载动作标注
+            frame_actions = {}
+            with open(actions_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        s = json.loads(line.strip())
+                        fid = s.get("frame_id", 0)
+                        key = s.get("human_action", {}).get("key", "")
+                        if key:
+                            # 映射到动作名
+                            mapped = action_map.get(key, key)
+                            if mapped in actions:
+                                frame_actions[fid] = mapped
+                    except Exception:
+                        pass
+
+            if not frame_actions:
+                continue
+
+            self._emit_log(
+                f"[训练] 录制 [{di+1}/{len(recording_dirs)}]: "
+                f"{len(frame_actions)} 帧标注"
+            )
+
+            # 读取视频帧并编码
+            cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 continue
 
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self._emit_log(
-                f"[E2E] 编码视频 [{vi+1}/{len(video_files)}]: "
-                f"{Path(vpath).name} ({total_frames} 帧, 每 {encode_interval} 帧取 1 帧)"
-            )
-
             frame_idx = 0
             batch_frames = []
-            batch_fids = []
+            batch_labels = []
 
             while not self._stop:
                 ret, frame = cap.read()
@@ -387,51 +325,43 @@ class LearningPipeline(LoggingMixin):
                     break
 
                 frame_idx += 1
-                if frame_idx % encode_interval != 0:
-                    continue
-
-                label = annotated_actions.get(frame_idx) or get_label_for_frame(frame_idx)
+                label = frame_actions.get(frame_idx)
                 if label is None:
                     continue
 
-                if frame_idx in annotated_actions:
-                    total_encoded += 1
-                else:
-                    total_propagated += 1
-
                 batch_frames.append(frame)
-                batch_fids.append((frame_idx, label))
+                batch_labels.append(label)
 
                 if len(batch_frames) >= 16:
                     embeddings = encoder.encode_batch(batch_frames)
-                    for emb, (fid, lbl) in zip(embeddings, batch_fids):
+                    for emb, lbl in zip(embeddings, batch_labels):
                         dataset.add_sample(emb, lbl)
+                    total_samples += len(batch_frames)
                     batch_frames.clear()
-                    batch_fids.clear()
+                    batch_labels.clear()
 
-                    done = total_encoded + total_propagated
-                    self._progress("encode", 0.5 + 0.15 * min(done / max(len(annotated_actions) * 5, 1), 1.0))
+                    self._progress(
+                        "train",
+                        0.3 + 0.35 * min(total_samples / max(len(frame_actions) * len(recording_dirs), 1), 1.0)
+                    )
 
             if batch_frames:
                 embeddings = encoder.encode_batch(batch_frames)
-                for emb, (fid, lbl) in zip(embeddings, batch_fids):
+                for emb, lbl in zip(embeddings, batch_labels):
                     dataset.add_sample(emb, lbl)
+                total_samples += len(batch_frames)
 
             cap.release()
 
-        self._emit_log(
-            f"[E2E] 编码完成: {len(dataset)} 样本 "
-            f"(精确标注 {total_encoded} + 传播 {total_propagated}), "
-            f"{dataset.num_actions} 动作"
-        )
+        self._emit_log(f"[训练] 编码完成: {len(dataset)} 样本, {dataset.num_actions} 动作")
 
         if len(dataset) < 10:
             return {"error": "insufficient_data", "count": len(dataset)}
 
         dataset_path = str(Path(model_dir) / "e2e_dataset.npz")
+        Path(model_dir).mkdir(parents=True, exist_ok=True)
         dataset.save(dataset_path)
 
-        # ── 训练 ──
         self._progress("train", 0.65)
         trainer = E2ETrainer(
             dataset=dataset,
@@ -443,10 +373,12 @@ class LearningPipeline(LoggingMixin):
             on_log=self._on_log,
         )
 
-        return trainer.train()
+        metrics = trainer.train()
+        metrics["total_samples"] = total_samples
+        return metrics
 
     def _run_e2e_rl(self, video_files, actions, model_dir, rl_steps) -> dict:
-        """端到端 RL：在视觉嵌入空间做策略梯度强化。"""
+        """端到端 RL 微调。"""
         import cv2
         import torch
         import torch.nn.functional as F
@@ -536,8 +468,6 @@ class LearningPipeline(LoggingMixin):
             self._policy_update(optimizer, log_probs_buffer, rewards_buffer)
 
         torch.save(model.state_dict(), model_path)
-        self._emit_log(f"[RL] 模型已更新: {model_path}")
-
         return {
             "total_steps": step,
             "avg_reward": round(total_reward / max(step, 1), 4),
@@ -567,7 +497,8 @@ class LearningPipeline(LoggingMixin):
         optimizer.step()
 
     def _export_profile(self, run_dir, description, actions,
-                        action_descriptions, model_dir, insight) -> str:
+                        action_descriptions, model_dir,
+                        action_map=None) -> str:
         """导出场景 Profile YAML。"""
         import yaml
 
@@ -575,22 +506,29 @@ class LearningPipeline(LoggingMixin):
         for ch in "（）()【】[]{}，。、/\\:：":
             name = name.replace(ch, "_")
 
+        # 使用真实按键映射
         action_key_map = {}
-        key_pool = list("qwertyuiop")
-        for i, a in enumerate(actions):
-            if a == "idle":
-                continue
-            key = key_pool[i % len(key_pool)]
-            action_key_map[a] = {"type": "keyboard", "action": "press", "key": key}
+        if action_map:
+            for key, action_name in action_map.items():
+                if action_name != "idle":
+                    action_key_map[action_name] = {
+                        "type": "keyboard", "action": "press", "key": key,
+                    }
+        else:
+            key_pool = list("qwertyuiop")
+            for i, a in enumerate(actions):
+                if a == "idle":
+                    continue
+                key = key_pool[i % len(key_pool)]
+                action_key_map[a] = {"type": "keyboard", "action": "press", "key": key}
 
         profile_data = {
             "name": name,
             "display_name": description,
             "actions": actions,
             "action_key_map": action_key_map,
-            "action_descriptions": action_descriptions,
+            "action_descriptions": action_descriptions or {},
             "decision_model_dir": model_dir,
-            "scene_keywords": insight.scene_keywords if insight else [],
         }
 
         profile_path = str(run_dir / f"{name}.yaml")
@@ -604,3 +542,291 @@ class LearningPipeline(LoggingMixin):
             shutil.copy2(profile_path, str(profiles_dir / f"{name}.yaml"))
 
         return profile_path
+
+    # ================================================================
+    #  伪标签扩展：用已训练模型标注新视频
+    # ================================================================
+
+    def expand_from_videos(
+        self,
+        model_dir: str,
+        video_paths: list[str],
+        confidence_threshold: float = 0.85,
+        max_idle_ratio: float = 0.3,
+        epochs: int = 100,
+        mix_ratio: float = 0.3,
+    ) -> LearningResult:
+        """用已有模型对新视频做伪标签，扩充数据后重新训练。
+
+        Args:
+            model_dir: 已训练模型目录（含 model.pt + model.meta.json）
+            video_paths: 新视频文件路径
+            confidence_threshold: 伪标签置信度阈值（低于此值丢弃）
+            max_idle_ratio: idle 动作最大保留比例（防止 idle 主导）
+            epochs: 重新训练轮数
+            mix_ratio: 原始数据混入比例（0.3 = 至少 30% 原始数据）
+
+        Returns:
+            新一轮训练的 LearningResult
+        """
+        import cv2
+        import torch
+
+        self._stop = False
+        run_dir = self._output_dir / time.strftime("%Y%m%d_%H%M%S")
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        result = LearningResult(run_dir=str(run_dir), data_source="pseudo_label")
+
+        model_path = Path(model_dir) / "model.pt"
+        meta_path = Path(model_dir) / "model.meta.json"
+        dataset_path = Path(model_dir) / "e2e_dataset.npz"
+
+        if not model_path.exists() or not meta_path.exists():
+            self._emit_log("[错误] 模型文件不存在")
+            return result
+
+        # 加载模型和元数据（兼容 BC 和 DQN 两种模型）
+        from ..core.vision_encoder import VisionEncoder
+        from ..data.e2e_dataset import E2EDataset
+
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        actions = meta.get("action_list", [])
+        action_map_inv = {v: k for k, v in meta.get("action_map", {}).items()}
+
+        model_type = meta.get("model_type", "e2e_mlp")
+        embed_dim = meta.get("embed_dim", 576)
+        num_actions = meta.get("num_actions", len(actions))
+        hidden_dims = meta.get("hidden_dims", [256, 128])
+
+        if model_type == "dqn":
+            from ..rl.dqn_agent import DQNNetwork
+            model = DQNNetwork(embed_dim, num_actions, hidden_dims)
+        else:
+            from ..data.e2e_trainer import E2EMLP
+            model = E2EMLP(embed_dim, num_actions, hidden_dims)
+
+        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        model.eval()
+
+        encoder = VisionEncoder()
+
+        self._emit_log("=" * 50)
+        self._emit_log(f"伪标签扩展: {len(video_paths)} 个视频")
+        self._emit_log(f"  模型: {model_dir}")
+        self._emit_log(f"  动作集: {actions}")
+        self._emit_log(f"  置信度阈值: {confidence_threshold}")
+        self._progress("expand", 0.0)
+
+        # ── Phase 1: 伪标签生成 ──
+        pseudo_samples = []  # (embedding, action_name, confidence)
+        total_frames = 0
+        accepted = 0
+        rejected = 0
+        action_counts = defaultdict(int)
+
+        for vi, vpath in enumerate(video_paths):
+            if self._stop:
+                break
+
+            cap = cv2.VideoCapture(vpath)
+            if not cap.isOpened():
+                self._emit_log(f"  [跳过] 无法打开: {vpath}")
+                continue
+
+            video_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._emit_log(
+                f"  [{vi+1}/{len(video_paths)}] {Path(vpath).name} ({video_total} 帧)"
+            )
+
+            batch_frames = []
+            frame_idx = 0
+
+            while not self._stop:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                frame_idx += 1
+                batch_frames.append(frame)
+
+                if len(batch_frames) >= 16:
+                    self._process_pseudo_batch(
+                        encoder, model, batch_frames, actions,
+                        confidence_threshold, pseudo_samples,
+                        action_counts,
+                    )
+                    total_frames += len(batch_frames)
+                    accepted = len(pseudo_samples)
+                    rejected = total_frames - accepted
+                    batch_frames.clear()
+
+                    if frame_idx % 100 == 0:
+                        pct = (vi + frame_idx / max(video_total, 1)) / len(video_paths)
+                        self._progress("expand", pct * 0.5)
+
+            # 尾巴
+            if batch_frames:
+                self._process_pseudo_batch(
+                    encoder, model, batch_frames, actions,
+                    confidence_threshold, pseudo_samples,
+                    action_counts,
+                )
+                total_frames += len(batch_frames)
+
+            cap.release()
+
+        accepted = len(pseudo_samples)
+        rejected = total_frames - accepted
+
+        self._emit_log(f"  伪标签完成: 总帧={total_frames}, "
+                       f"接受={accepted} ({accepted/max(total_frames,1)*100:.1f}%), "
+                       f"拒绝={rejected}")
+        self._emit_log(f"  动作分布: {dict(action_counts)}")
+
+        if accepted < 10:
+            self._emit_log("[错误] 高置信度样本太少，无法扩展")
+            return result
+
+        # ── idle 比例控制 ──
+        idle_idx = None
+        for i, a in enumerate(actions):
+            if a == "idle":
+                idle_idx = i
+                break
+
+        if idle_idx is not None and action_counts.get("idle", 0) > 0:
+            non_idle = sum(v for k, v in action_counts.items() if k != "idle")
+            max_idle = int(non_idle * max_idle_ratio / (1 - max_idle_ratio))
+            current_idle = action_counts.get("idle", 0)
+            if current_idle > max_idle:
+                # 随机采样 idle
+                import random
+                idle_samples = [s for s in pseudo_samples if s[1] == "idle"]
+                other_samples = [s for s in pseudo_samples if s[1] != "idle"]
+                random.shuffle(idle_samples)
+                pseudo_samples = other_samples + idle_samples[:max_idle]
+                self._emit_log(f"  idle 限制: {current_idle} → {min(current_idle, max_idle)}")
+
+        # ── Phase 2: 合并数据集 ──
+        self._emit_log("=" * 50)
+        self._emit_log("合并数据集...")
+        self._progress("expand", 0.55)
+
+        new_dataset = E2EDataset()
+        new_dataset.set_actions(actions)
+
+        # 加载原始数据集
+        orig_count = 0
+        if dataset_path.exists():
+            orig_dataset = E2EDataset.load(str(dataset_path))
+            orig_count = len(orig_dataset)
+
+            # 确保原始数据至少占 mix_ratio
+            min_orig = int(len(pseudo_samples) * mix_ratio / (1 - mix_ratio))
+            orig_to_add = max(orig_count, min_orig)
+
+            for emb, lbl in zip(orig_dataset.embeddings[:orig_to_add],
+                                orig_dataset.labels[:orig_to_add]):
+                action_name = actions[lbl] if lbl < len(actions) else "idle"
+                new_dataset.add_sample(emb, action_name)
+
+            self._emit_log(f"  原始数据: {orig_count} 样本")
+        else:
+            self._emit_log("  [注意] 未找到原始数据集，仅使用伪标签")
+
+        # 添加伪标签数据
+        for emb, action_name, conf in pseudo_samples:
+            new_dataset.add_sample(emb, action_name)
+
+        self._emit_log(
+            f"  合并后: {len(new_dataset)} 样本 "
+            f"(原始 {orig_count} + 伪标签 {len(pseudo_samples)})"
+        )
+
+        # ── Phase 3: 重新训练 ──
+        new_model_dir = str(run_dir / "model")
+        self._emit_log("=" * 50)
+        self._emit_log(f"重新训练 ({epochs} 轮)")
+        self._progress("train", 0.6)
+
+        from ..data.e2e_trainer import E2ETrainer
+
+        Path(new_model_dir).mkdir(parents=True, exist_ok=True)
+        new_dataset.save(str(Path(new_model_dir) / "e2e_dataset.npz"))
+
+        trainer = E2ETrainer(
+            dataset=new_dataset,
+            output_dir=new_model_dir,
+            epochs=epochs,
+            progress_callback=lambda ep, total, loss, tacc, vacc: self._progress(
+                "train", 0.6 + 0.35 * ep / max(total, 1)
+            ),
+            on_log=self._on_log,
+        )
+
+        metrics = trainer.train()
+        metrics["total_samples"] = len(new_dataset)
+        metrics["pseudo_samples"] = len(pseudo_samples)
+        metrics["orig_samples"] = orig_count
+        metrics["confidence_threshold"] = confidence_threshold
+
+        result.metrics = metrics
+        result.model_dir = new_model_dir
+        result.annotated_count = len(new_dataset)
+
+        if metrics.get("error"):
+            self._emit_log(f"  训练失败: {metrics['error']}")
+            return result
+
+        old_acc = meta.get("best_val_acc", 0)
+        new_acc = metrics.get("best_val_acc", 0)
+        self._emit_log(f"  训练完成: val_acc={new_acc:.3f} (之前: {old_acc:.3f})")
+
+        if new_acc > old_acc:
+            self._emit_log(f"  精度提升: +{(new_acc-old_acc)*100:.1f}%")
+        else:
+            self._emit_log(f"  [注意] 精度未提升，可能需要更高置信度阈值或更多数据")
+
+        result.success = True
+        self._progress("done", 1.0)
+        self._emit_log("=" * 50)
+        self._emit_log("伪标签扩展完成!")
+        self._emit_log(f"  新模型: {new_model_dir}")
+
+        self._save_session(run_dir, result)
+        return result
+
+    @staticmethod
+    def _process_pseudo_batch(
+        encoder, model, frames, actions,
+        threshold, out_samples, action_counts,
+    ):
+        """处理一批帧的伪标签。"""
+        import torch
+
+        embeddings = encoder.encode_batch(frames)
+        tensors = torch.tensor(
+            np.array(embeddings, dtype=np.float32)
+        )
+
+        with torch.no_grad():
+            logits = model(tensors)
+            probs = torch.softmax(logits, dim=-1)
+            confidences, indices = probs.max(dim=-1)
+
+        for emb, conf, idx in zip(embeddings, confidences, indices):
+            conf_val = conf.item()
+            action_idx = idx.item()
+            if conf_val >= threshold and action_idx < len(actions):
+                action_name = actions[action_idx]
+                out_samples.append((emb, action_name, conf_val))
+                action_counts[action_name] += 1
+
+    def _save_session(self, run_dir, result):
+        """保存会话记录。"""
+        record_path = run_dir / "session.json"
+        with open(record_path, "w", encoding="utf-8") as f:
+            json.dump(result.to_dict(), f, ensure_ascii=False, indent=2, default=str)

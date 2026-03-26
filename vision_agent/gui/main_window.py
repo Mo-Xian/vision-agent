@@ -1,19 +1,20 @@
-"""主窗口：训练工坊 + LLM 配置。"""
+"""主窗口：训练工坊（行为克隆）+ 自对弈（RL）+ LLM 配置。"""
 
 import os
 import json
 import threading
 from pathlib import Path
-from PySide6.QtCore import Qt, Slot, Signal, QSettings
+from PySide6.QtCore import Qt, Slot, Signal, QSettings, QTimer
 from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QFileDialog, QTextEdit, QSplitter,
-    QMessageBox, QStackedWidget, QTabWidget,
+    QLabel, QPushButton, QTextEdit,
+    QMessageBox, QStackedWidget,
 )
 
 from ..decision import PROVIDER_PRESETS, create_provider
 from .workshop_panel import WorkshopPanel
+from .selfplay_panel import SelfPlayPanel
 from .llm_panel import LLMPanel
 from .styles import MAIN_STYLESHEET, COLORS
 
@@ -49,6 +50,10 @@ class MainWindow(QMainWindow):
     _learn_log = Signal(str)
     _learn_progress = Signal(str, float)
     _learn_done = Signal(dict)
+    _recording_done = Signal(str, dict)  # rec_dir, stats
+    _selfplay_log = Signal(str)
+    _selfplay_stats = Signal(dict)
+    _selfplay_frame = Signal(object)
 
     def __init__(self):
         super().__init__()
@@ -75,6 +80,11 @@ class MainWindow(QMainWindow):
         self._settings = QSettings("VisionAgent", "VisionAgent")
         self._current_mode = "workshop"
         self._learner = None
+        self._recorder = None
+        self._selfplay_loop = None
+        self._selfplay_capture_timer = None
+        self._dqn_engine = None
+        self._agent_running = False
         self._last_model_dir = ""
 
         self._init_ui()
@@ -97,9 +107,11 @@ class MainWindow(QMainWindow):
         mode_row = QHBoxLayout()
         mode_row.setSpacing(4)
         self.mode_workshop_btn = QPushButton("训练工坊")
+        self.mode_selfplay_btn = QPushButton("Agent 部署")
         self.mode_llm_btn = QPushButton("LLM 设置")
         for btn, mode in [
             (self.mode_workshop_btn, "workshop"),
+            (self.mode_selfplay_btn, "selfplay"),
             (self.mode_llm_btn, "llm"),
         ]:
             btn.setCursor(Qt.PointingHandCursor)
@@ -111,9 +123,11 @@ class MainWindow(QMainWindow):
         # 模式面板栈
         self.mode_stack = QStackedWidget()
         self.workshop_panel = WorkshopPanel()
+        self.selfplay_panel = SelfPlayPanel()
         self.llm_panel = LLMPanel()
         self.mode_stack.addWidget(self.workshop_panel)  # 0
-        self.mode_stack.addWidget(self.llm_panel)       # 1
+        self.mode_stack.addWidget(self.selfplay_panel)  # 1
+        self.mode_stack.addWidget(self.llm_panel)       # 2
         root_layout.addWidget(self.mode_stack, 1)
 
         # 底部日志
@@ -131,6 +145,7 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self):
         wp = self.workshop_panel
+        sp = self.selfplay_panel
         lp = self.llm_panel
 
         # 学习管线信号
@@ -145,9 +160,25 @@ class MainWindow(QMainWindow):
         lp.llm_save_btn.clicked.connect(self._save_llm_settings)
 
         # 训练工坊
-        wp.learn_requested.connect(self._start_learning)
+        wp.learn_from_recording_requested.connect(self._start_learning_from_recordings)
         wp.stop_requested.connect(self._stop_learning)
+        wp.recording_started.connect(self._start_recording)
+        wp.recording_stopped.connect(self._stop_recording)
         wp.view_models_btn.clicked.connect(self._view_models)
+
+        # 自对弈训练（在训练工坊中）
+        wp.selfplay_start_requested.connect(self._start_selfplay)
+        wp.selfplay_stop_requested.connect(self._stop_selfplay)
+
+        # Agent 部署面板
+        sp.agent_start_requested.connect(self._start_agent)
+        sp.agent_stop_requested.connect(self._stop_agent)
+        self._selfplay_log.connect(sp._append_log)
+        self._selfplay_log.connect(self._on_learn_log)  # 也显示到工坊日志
+        self._selfplay_frame.connect(sp._update_frame)
+
+        # 录制完成信号
+        self._recording_done.connect(self._on_recording_done)
 
         self._on_provider_changed(lp.llm_provider_combo.currentText())
 
@@ -157,82 +188,16 @@ class MainWindow(QMainWindow):
 
     def _switch_mode(self, mode: str):
         self._current_mode = mode
-        index = {"workshop": 0, "llm": 1}.get(mode, 0)
+        index = {"workshop": 0, "selfplay": 1, "llm": 2}.get(mode, 0)
         self.mode_stack.setCurrentIndex(index)
 
         for btn, m in [
             (self.mode_workshop_btn, "workshop"),
+            (self.mode_selfplay_btn, "selfplay"),
             (self.mode_llm_btn, "llm"),
         ]:
             btn.setObjectName("modeBtnActive" if m == mode else "modeBtnInactive")
             btn.setStyle(btn.style())
-
-    # ================================================================
-    #  训练工坊 - 视频学习
-    # ================================================================
-
-    @Slot()
-    def _start_learning(self):
-        wp = self.workshop_panel
-        video_paths = wp.get_video_paths()
-        if not video_paths:
-            QMessageBox.warning(self, "提示", "请选择视频文件或输入流地址")
-            return
-
-        api_key = self._get_llm_api_key()
-        provider_name = self.llm_panel.llm_provider_combo.currentText()
-        if not api_key and provider_name != "ollama":
-            QMessageBox.warning(self, "提示", "请先在 LLM 设置中配置 API Key")
-            self._switch_mode("llm")
-            return
-
-        wp.set_learning_state(True)
-        wp.log_text.clear()
-        wp.insight_text.clear()
-        wp.progress_bar.setValue(0)
-        wp.train_chart.clear()
-        wp.train_chart.setVisible(True)
-
-        from ..workshop.learning_pipeline import LearningPipeline
-
-        output_dir = "runs/workshop"
-        if wp.current_scene:
-            output_dir = str(Path(wp.current_scene.scene_dir) / "sessions")
-            wp.current_scene.session_count += 1
-            wp.current_scene.status = "training"
-            wp.current_scene.save()
-
-        self._learner = LearningPipeline(
-            llm_provider_name=provider_name,
-            llm_api_key=api_key,
-            llm_model=self.llm_panel.llm_model_combo.currentText(),
-            llm_base_url=self.llm_panel.llm_base_url.text().strip(),
-            output_dir=output_dir,
-            on_log=lambda msg: self._learn_log.emit(msg),
-            on_progress=lambda phase, pct: self._learn_progress.emit(phase, pct),
-        )
-
-        kwargs = {
-            "video_paths": video_paths,
-            "description": wp.description_input.text().strip(),
-            "sample_count": wp.sample_count_spin.value(),
-            "epochs": wp.epochs_spin.value(),
-            "rl_steps": wp.rl_steps_spin.value(),
-            "send_image": wp.send_image_check.isChecked(),
-            "batch_size": wp.batch_size_spin.value(),
-            "knowledge": wp.knowledge_input.toPlainText().strip(),
-        }
-
-        def _run():
-            try:
-                result = self._learner.learn_from_videos(**kwargs)
-                self._learn_done.emit(result.to_dict())
-            except Exception as e:
-                self._learn_log.emit(f"[错误] {e}")
-                self._learn_done.emit({})
-
-        threading.Thread(target=_run, daemon=True).start()
-        self._log("[工坊] 学习开始...")
 
     @Slot()
     def _stop_learning(self):
@@ -250,8 +215,9 @@ class MainWindow(QMainWindow):
     def _on_learn_progress(self, phase: str, pct: float):
         wp = self.workshop_panel
         phase_labels = {
-            "analyze": "分析视频", "annotate": "LLM 标注",
-            "encode": "视觉编码", "train": "训练模型",
+            "discover": "动作发现",
+            "train": "训练模型",
+            "expand": "伪标签扩展",
             "rl": "强化学习", "done": "完成",
         }
         label = phase_labels.get(phase, phase)
@@ -289,10 +255,19 @@ class MainWindow(QMainWindow):
 
             self._log(f"[工坊] 学习完成 → {result['model_dir']}")
 
+            # 显示教练建议
+            coach = result.get("coach_advice", {})
+            advice_text = ""
+            if coach.get("suggestions"):
+                advice_text = "\n\n教练建议:\n" + "\n".join(
+                    f"  - {s}" for s in coach["suggestions"][:3]
+                )
+
             QMessageBox.information(
                 self, "学习完成",
                 f"模型: {result['model_dir']}\n"
-                f"Profile: {result.get('profile_path', 'N/A')}\n\n"
+                f"Profile: {result.get('profile_path', 'N/A')}"
+                f"{advice_text}\n\n"
                 f"使用 eval_model.py 评估模型效果。"
             )
         else:
@@ -301,6 +276,142 @@ class MainWindow(QMainWindow):
                 scene.status = "idle"
                 scene.save()
             self._log("[工坊] 学习失败或中止")
+
+    # ================================================================
+    #  录制
+    # ================================================================
+
+    @Slot()
+    def _start_recording(self):
+        if self._recorder and self._recorder.is_recording:
+            return
+
+        wp = self.workshop_panel
+        scene = wp.current_scene
+
+        # 确定输出目录
+        import time as _time
+        if scene:
+            rec_dir = str(Path(scene.scene_dir) / "recordings" / _time.strftime("%Y%m%d_%H%M%S"))
+        else:
+            rec_dir = f"recordings/{_time.strftime('%Y%m%d_%H%M%S')}"
+
+        from ..data.game_recorder import GameRecorder
+        window_title = wp.get_window_title()
+        self._recorder = GameRecorder(
+            output_dir=rec_dir,
+            fps=10,
+            window_title=window_title,
+            record_mouse=True,
+            on_log=lambda msg: self._learn_log.emit(msg),
+        )
+        self._recorder.start()
+        wp.set_recording_state(True)
+        window_info = f" (窗口: {window_title})" if window_title else " (全屏)"
+        self._log(f"[录制] 开始录制{window_info}，F9 暂停/恢复...")
+
+    @Slot()
+    def _stop_recording(self):
+        if not self._recorder or not self._recorder.is_recording:
+            return
+
+        wp = self.workshop_panel
+        wp.set_recording_state(False)
+        wp.record_status.setText("保存中...")
+
+        recorder = self._recorder
+
+        def _save():
+            try:
+                stats = recorder.stop()
+                self._recording_done.emit(
+                    stats.output_dir,
+                    {
+                        "total_frames": stats.total_frames,
+                        "total_events": stats.total_events,
+                        "duration_sec": stats.duration_sec,
+                        "action_dist": stats.action_dist,
+                    },
+                )
+            except Exception as e:
+                self._learn_log.emit(f"[录制] 保存失败: {e}")
+
+        threading.Thread(target=_save, daemon=True).start()
+
+    @Slot(str, dict)
+    def _on_recording_done(self, rec_dir: str, stats: dict):
+        wp = self.workshop_panel
+        wp.set_recording_state(False)
+        wp.record_status.setText("")
+        wp.add_recording(rec_dir, stats)
+        self._recorder = None
+
+        self._log(
+            f"[录制] 完成: {stats.get('total_frames', 0)} 帧, "
+            f"{stats.get('duration_sec', 0):.0f}s"
+        )
+        QMessageBox.information(
+            self, "录制完成",
+            f"帧数: {stats.get('total_frames', 0)}\n"
+            f"时长: {stats.get('duration_sec', 0):.0f}s\n"
+            f"事件: {stats.get('total_events', 0)}\n\n"
+            f"已添加到录制列表，可继续录制更多或开始学习。"
+        )
+
+    @Slot()
+    def _start_learning_from_recordings(self):
+        wp = self.workshop_panel
+        recording_dirs = wp.get_recording_dirs()
+        if not recording_dirs:
+            QMessageBox.warning(self, "提示", "请先录制操作或导入录制数据")
+            return
+
+        api_key = self._get_llm_api_key()
+        provider_name = self.llm_panel.llm_provider_combo.currentText()
+
+        wp.set_learning_state(True)
+        wp.log_text.clear()
+        wp.progress_bar.setValue(0)
+        wp.train_chart.clear()
+        wp.train_chart.setVisible(True)
+
+        from ..workshop.learning_pipeline import LearningPipeline
+
+        output_dir = "runs/workshop"
+        if wp.current_scene:
+            output_dir = str(Path(wp.current_scene.scene_dir) / "sessions")
+            wp.current_scene.session_count += 1
+            wp.current_scene.status = "training"
+            wp.current_scene.save()
+
+        self._learner = LearningPipeline(
+            llm_provider_name=provider_name,
+            llm_api_key=api_key,
+            llm_model=self.llm_panel.llm_model_combo.currentText(),
+            llm_base_url=self.llm_panel.llm_base_url.text().strip(),
+            output_dir=output_dir,
+            on_log=lambda msg: self._learn_log.emit(msg),
+            on_progress=lambda phase, pct: self._learn_progress.emit(phase, pct),
+        )
+
+        kwargs = {
+            "recording_dirs": recording_dirs,
+            "description": wp.description_input.text().strip(),
+            "epochs": wp.epochs_spin.value(),
+            "rl_steps": wp.rl_steps_spin.value(),
+            "knowledge": wp.knowledge_input.toPlainText().strip(),
+        }
+
+        def _run():
+            try:
+                result = self._learner.learn_from_recordings(**kwargs)
+                self._learn_done.emit(result.to_dict())
+            except Exception as e:
+                self._learn_log.emit(f"[错误] {e}")
+                self._learn_done.emit({})
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._log("[工坊] 行为克隆学习开始...")
 
     @Slot()
     def _view_models(self):
@@ -318,6 +429,209 @@ class MainWindow(QMainWindow):
                 f"type={m.model_type}  |  samples={m.train_samples}  |  {m.trained_at}"
             )
         QMessageBox.information(self, "模型列表", "\n".join(lines))
+
+    # ================================================================
+    #  自对弈训练（在训练工坊中）
+    # ================================================================
+
+    @Slot()
+    def _start_selfplay(self):
+        if self._selfplay_loop:
+            return
+
+        wp = self.workshop_panel
+        sp_config = wp.get_selfplay_config()
+        # 设备信息从 Agent 部署面板获取
+        device_serial = self.selfplay_panel.get_device_serial()
+
+        if not device_serial:
+            QMessageBox.warning(
+                self, "提示",
+                "请先在「Agent 部署」面板中连接手机设备。"
+            )
+            return
+
+        wp.set_selfplay_state(True)
+
+        def _run():
+            try:
+                from ..rl.preset import load_selfplay_preset
+                from ..rl.self_play import SelfPlayLoop
+
+                preset = load_selfplay_preset(sp_config["preset"])
+                dqn = preset.get("dqn_params", {})
+
+                def _on_stats(s):
+                    self._selfplay_stats.emit(s)
+                    # 更新工坊面板统计
+                    QTimer.singleShot(0, lambda: wp.update_selfplay_stats(s))
+
+                self._selfplay_loop = SelfPlayLoop(
+                    action_zones=preset["action_zones"],
+                    bc_model_dir=sp_config.get("bc_model_dir", "") or preset.get("bc_model_dir", ""),
+                    output_dir=preset.get("output_dir", "runs/selfplay/exp1"),
+                    device_serial=device_serial,
+                    reward_config=preset.get("reward_config"),
+                    start_model_path=preset.get("start_model_path", ""),
+                    lr=dqn.get("lr", 0.0005),
+                    gamma=dqn.get("gamma", 0.99),
+                    epsilon_start=dqn.get("epsilon_start", 1.0),
+                    epsilon_end=dqn.get("epsilon_end", 0.05),
+                    epsilon_decay=dqn.get("epsilon_decay", 0.998),
+                    buffer_capacity=dqn.get("buffer_capacity", 50000),
+                    batch_size=dqn.get("batch_size", 64),
+                    fps=sp_config.get("fps", 5),
+                    max_episodes=sp_config.get("max_episodes", 0),
+                    on_log=lambda msg: self._selfplay_log.emit(msg),
+                    on_stats=_on_stats,
+                )
+
+                self._start_frame_capture()
+                self._selfplay_loop.start()
+
+                while self._selfplay_loop and self._selfplay_loop.is_running:
+                    import time
+                    time.sleep(0.5)
+
+            except Exception as e:
+                self._selfplay_log.emit(f"[错误] {e}")
+            finally:
+                self._selfplay_loop = None
+                self._stop_frame_capture()
+                QTimer.singleShot(0, lambda: wp.set_selfplay_state(False))
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._log("[自对弈] 启动训练...")
+
+    @Slot()
+    def _stop_selfplay(self):
+        if self._selfplay_loop:
+            self._selfplay_log.emit("[自对弈] 正在停止...")
+            loop = self._selfplay_loop
+            threading.Thread(target=loop.stop, daemon=True).start()
+
+    def _start_frame_capture(self):
+        """启动帧捕获定时器，定期从 scrcpy 窗口截图并发送到面板。"""
+        def _capture():
+            if not self._selfplay_loop or not self._selfplay_loop.is_running:
+                return
+            try:
+                frame = self._selfplay_loop._env._capture_frame()
+                if frame is not None:
+                    self._selfplay_frame.emit(frame)
+            except Exception:
+                pass
+
+        self._selfplay_capture_timer = QTimer()
+        self._selfplay_capture_timer.timeout.connect(_capture)
+        self._selfplay_capture_timer.start(200)
+
+    def _stop_frame_capture(self):
+        if self._selfplay_capture_timer:
+            QTimer.singleShot(0, self._selfplay_capture_timer.stop)
+
+    # ================================================================
+    #  Agent 部署（用训练模型接管游戏）
+    # ================================================================
+
+    @Slot()
+    def _start_agent(self):
+        if self._agent_running:
+            return
+
+        sp = self.selfplay_panel
+        model_dir = sp.get_agent_model_dir()
+        if not model_dir:
+            QMessageBox.warning(self, "提示", "请选择模型目录（DQN 或 BC 训练产出）")
+            return
+
+        device_serial = sp.get_device_serial()
+        preset_name = sp.get_preset_name()
+
+        sp.set_agent_running_state(True)
+        self._agent_running = True
+
+        def _run():
+            try:
+                from ..rl.preset import load_selfplay_preset
+                from ..decision.dqn_engine import DQNEngine
+
+                preset = load_selfplay_preset(preset_name)
+
+                self._dqn_engine = DQNEngine(
+                    model_dir=model_dir,
+                    touch_zones=preset.get("action_zones", []),
+                    device_serial=device_serial,
+                    execute_actions=True,
+                )
+                self._dqn_engine.on_start()
+
+                self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir}")
+                self._selfplay_log.emit(f"[Agent] 开始接管游戏 (预设: {preset_name})")
+
+                from ..core.vision_encoder import VisionEncoder
+                encoder = VisionEncoder()
+
+                # 启动帧捕获显示
+                self._start_agent_frame_capture()
+
+                import time
+                while self._agent_running:
+                    frame = self._capture_scrcpy_frame()
+                    if frame is None:
+                        time.sleep(0.5)
+                        continue
+
+                    self._selfplay_frame.emit(frame)
+
+                    actions = self._dqn_engine.decide(embedding=frame)
+                    if actions:
+                        action = actions[0]
+                        if action.name != "idle":
+                            self._selfplay_log.emit(
+                                f"[Agent] {action.name} (conf={action.confidence:.2f}) {action.reason}"
+                            )
+
+                    time.sleep(0.2)  # ~5 FPS
+
+            except Exception as e:
+                self._selfplay_log.emit(f"[Agent 错误] {e}")
+            finally:
+                if self._dqn_engine:
+                    self._dqn_engine.on_stop()
+                    self._dqn_engine = None
+                self._agent_running = False
+                self._stop_frame_capture()
+                QTimer.singleShot(0, lambda: sp.set_agent_running_state(False))
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._log("[Agent] 启动中...")
+
+    @Slot()
+    def _stop_agent(self):
+        self._agent_running = False
+        self._selfplay_log.emit("[Agent] 正在停止...")
+
+    def _start_agent_frame_capture(self):
+        """Agent 模式的帧捕获（复用 scrcpy 窗口）。"""
+        pass  # Agent 循环内直接发送帧，无需额外定时器
+
+    def _capture_scrcpy_frame(self):
+        """从 scrcpy 窗口截取一帧。"""
+        try:
+            from ..data.game_recorder import GameRecorder
+            region = GameRecorder._find_window("scrcpy")
+            if not region:
+                return None
+            import mss
+            import cv2
+            import numpy as np
+            with mss.mss() as sct:
+                img = sct.grab(region)
+                frame = np.array(img)
+                return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        except Exception:
+            return None
 
     # ================================================================
     #  LLM 设置
@@ -409,9 +723,7 @@ class MainWindow(QMainWindow):
         s.setValue("decision/base_url", lp.llm_base_url.text())
         s.setValue("train/epochs", wp.epochs_spin.value())
         s.setValue("train/lr", wp.lr_spin.value())
-        s.setValue("train/sample_count", wp.sample_count_spin.value())
         s.setValue("train/rl_steps", wp.rl_steps_spin.value())
-        s.setValue("train/batch_size", wp.batch_size_spin.value())
 
     def _load_settings(self):
         s = self._settings
@@ -431,20 +743,22 @@ class MainWindow(QMainWindow):
         if s.value("train/lr") is not None:
             try: wp.lr_spin.setValue(float(s.value("train/lr", 0.001)))
             except (TypeError, ValueError): pass
-        if s.value("train/sample_count") is not None:
-            try: wp.sample_count_spin.setValue(int(s.value("train/sample_count", 300)))
-            except (TypeError, ValueError): pass
         if s.value("train/rl_steps") is not None:
             try: wp.rl_steps_spin.setValue(int(s.value("train/rl_steps", 2000)))
-            except (TypeError, ValueError): pass
-        if s.value("train/batch_size") is not None:
-            try: wp.batch_size_spin.setValue(int(s.value("train/batch_size", 5)))
             except (TypeError, ValueError): pass
 
     def closeEvent(self, event):
         self._save_settings()
+        if self._recorder and self._recorder.is_recording:
+            self._recorder.stop()
         if self._learner:
             self._learner.stop()
+        if self._selfplay_loop:
+            self._selfplay_loop.stop()
+        self._agent_running = False
+        if self._dqn_engine:
+            self._dqn_engine.on_stop()
+        self._stop_frame_capture()
         event.accept()
 
     # ================================================================
@@ -462,22 +776,22 @@ class MainWindow(QMainWindow):
         path = urls[0].toLocalFile()
         if not path:
             return
-        ext = Path(path).suffix.lower()
-        video_exts = {'.mp4', '.avi', '.mkv', '.mov', '.flv', '.wmv'}
 
-        if ext in video_exts:
-            wp = self.workshop_panel
-            wp.video_path_input.setText(path)
-            if wp.current_scene:
-                wp.current_scene.add_videos([path])
-                wp._update_scene_ui(wp.current_scene)
-            self._log(f"已加载视频: {Path(path).name}")
-        elif Path(path).is_dir():
-            wp = self.workshop_panel
-            wp.input_type.setCurrentText("视频文件夹")
-            wp.video_path_input.setText(path)
-            files = wp._scan_folder(path)
-            if wp.current_scene and files:
-                wp.current_scene.add_videos(files)
-                wp._update_scene_ui(wp.current_scene)
-            self._log(f"已加载文件夹: {Path(path).name}")
+        if Path(path).is_dir():
+            # 尝试作为录制目录导入
+            p = Path(path)
+            if (p / "recording.mp4").exists() and (p / "actions.jsonl").exists():
+                wp = self.workshop_panel
+                meta_path = p / "meta.json"
+                stats = None
+                if meta_path.exists():
+                    try:
+                        import json as _json
+                        with open(meta_path, "r", encoding="utf-8") as f:
+                            stats = _json.load(f)
+                    except Exception:
+                        pass
+                wp.add_recording(path, stats)
+                self._log(f"已导入录制: {p.name}")
+            else:
+                self._log(f"目录不是有效的录制数据: {Path(path).name}")

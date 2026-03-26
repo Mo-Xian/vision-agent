@@ -6,50 +6,59 @@
 |------|-----|
 | 项目名 | vision-agent |
 | 语言 | Python 3.10+ |
-| 核心依赖 | PyTorch, torchvision (MobileNetV3), OpenCV, PySide6, openai |
+| 核心依赖 | PyTorch, torchvision (MobileNetV3), OpenCV, PySide6, openai, mss, pynput |
 | 状态 | 活跃开发 |
 
 ## 项目定位
 
-端到端视频学习框架：给视频 → LLM 分析/标注 → 视觉编码 + MLP 训练 → 决策模型。
+端到端行为克隆 + RL 自学习框架：录制人类游戏操作 → 行为克隆 → 伪标签扩展 → RL 自对弈。
+
+支持 PC（窗口捕获+键鼠）和手机（scrcpy + ADB 触控）。
 
 ## 架构
 
 ```
-视频 → LLM视觉分析(场景/动作识别)
-     → LLM标注关键帧(决策数据)
-     → MobileNetV3视觉编码(576维嵌入)
-     → 标签传播(数据放大)
-     → MLP训练(行为克隆)
-     → 策略梯度RL(可选强化)
-     → 产出模型 + Profile
+阶段1 数据采集:
+  PC:  GameRecorder(窗口捕获+键鼠录制)
+  手机: MobileRecorder(scrcpy+ADB触控) → recording.mp4 + actions.jsonl
+
+阶段2 行为克隆:
+  LLM Coach 动作发现 → MobileNetV3 编码(576维) → MLP 训练 → 初始策略
+
+阶段3 数据扩展:
+  伪标签扩展(用模型标注新视频, 高置信度样本扩充) → 重新训练
+
+阶段4 RL 自对弈:
+  BC 模型热启动 → GameEnvironment(scrcpy截屏+ADB操作)
+  → DQN Agent(ε-greedy) → RewardDetector(血条/击杀/胜负)
+  → 经验回放 → Q网络训练 → 持续改进
 ```
 
 ## 核心文件
 
 | 文件 | 用途 |
 |------|------|
-| `main.py` | CLI 入口（learn/eval 子命令） |
+| `main.py` | CLI 入口（record/mobile/learn-bc/expand/self-play/eval） |
 | `gui_app.py` | PySide6 GUI 入口 |
-| `eval_model.py` | 模型评估工具（标注视频/训练曲线/统计） |
-| `config.yaml` | 全局配置 |
 | `vision_agent/core/vision_encoder.py` | MobileNetV3 视觉编码器 |
-| `vision_agent/core/keyframe.py` | 关键帧采样器 |
-| `vision_agent/data/auto_annotator.py` | LLM 自动标注器 |
+| `vision_agent/data/game_recorder.py` | PC 录制器（窗口捕获+键鼠+流式保存） |
+| `vision_agent/data/mobile_recorder.py` | 手机录制器（scrcpy+ADB 触摸采集） |
 | `vision_agent/data/e2e_dataset.py` | E2E 数据集 |
 | `vision_agent/data/e2e_trainer.py` | E2E MLP 训练器 |
 | `vision_agent/decision/base.py` | Action + DecisionEngine ABC |
 | `vision_agent/decision/e2e_engine.py` | E2E 推理引擎 |
-| `vision_agent/decision/llm_provider.py` | LLM 供应商抽象层 |
-| `vision_agent/decision/minimax_mcp.py` | MiniMax MCP 工具（VLM+搜索） |
-| `vision_agent/workshop/learning_pipeline.py` | 学习管线（分析→标注→训练→RL） |
-| `vision_agent/workshop/video_analyzer.py` | LLM 视频分析器 |
-| `vision_agent/workshop/scene.py` | 场景管理 |
-| `vision_agent/workshop/model_registry.py` | 模型注册中心 |
-| `vision_agent/workshop/session.py` | 训练会话 |
-| `vision_agent/gui/main_window.py` | GUI 主窗口（工坊+LLM设置） |
+| `vision_agent/decision/llm_coach.py` | LLM 教练（动作发现/诊断） |
+| `vision_agent/rl/game_env.py` | 游戏 RL 环境（scrcpy截屏+ADB操作） |
+| `vision_agent/rl/reward.py` | 奖励检测器（血条/死亡/胜负） |
+| `vision_agent/rl/dqn_agent.py` | DQN 智能体（支持 BC 热启动） |
+| `vision_agent/rl/self_play.py` | 自对弈循环（采集+训练双线程） |
+| `vision_agent/rl/preset.py` | 自对弈预设加载器（王者荣耀内置） |
+| `vision_agent/rl/replay_buffer.py` | 经验回放缓冲区 |
+| `vision_agent/workshop/learning_pipeline.py` | 学习管线（训练+伪标签扩展） |
+| `vision_agent/gui/main_window.py` | GUI 主窗口 |
 | `vision_agent/gui/workshop_panel.py` | 训练工坊面板 |
-| `vision_agent/gui/llm_panel.py` | LLM 配置面板 |
+| `profiles/wzry_5v5.yaml` | 王者荣耀 Profile（含触控区域） |
+| `profiles/wzry_selfplay.yaml` | 王者荣耀自对弈预设（完整配置） |
 
 ## 开发命令
 
@@ -57,35 +66,47 @@
 # GUI 模式
 python gui_app.py
 
-# CLI 学习
-python main.py learn video1.mp4 --provider minimax --model MiniMax-M2.7
+# PC 录制（F9 暂停/恢复，Ctrl+C 停止）
+python main.py record --output recordings/session1 --fps 10
+python main.py record --window "王者荣耀"
 
-# CLI 评估
+# 手机录制（scrcpy + ADB）
+python main.py mobile --check                        # 检查环境
+python main.py mobile --game moba                    # MOBA 预设
+python main.py mobile --zones touch_zones.json       # 自定义区域
+
+# 行为克隆训练
+python main.py learn-bc recordings/session1 recordings/session2
+
+# 伪标签扩展
+python main.py expand runs/workshop/exp1/model video1.mp4 video2.mp4
+
+# RL 自对弈
+python main.py self-play --preset wzry                          # 王者荣耀预设
+python main.py self-play --preset wzry --bc-model runs/.../model  # BC 热启动
+python main.py self-play --game moba                            # 通用 MOBA
+
+# 评估模型
 python main.py eval runs/workshop/exp1/model --mode stats
-python main.py eval runs/workshop/exp1/model --video video.mp4 --mode video
-
-# 测试 MiniMax MCP
-python test_minimax_mcp.py
 ```
 
-## 数据管线
+## RL 自学习流程
 
-LLM 自动标注 → 视觉编码 → 标签传播 → MLP 训练 → RL 强化
+参考 [wzry_ai](https://github.com/myBoris/wzry_ai) 项目，但有关键改进：
 
-1. **LLM 视觉分析**：截图发给 LLM，识别场景和动作集
-2. **LLM 标注关键帧**：LLM 看截图判断当前应执行什么动作 → JSONL
-3. **视觉编码**：MobileNetV3-Small 将帧编码为 576 维向量
-4. **标签传播**：关键帧标签扩展到相邻帧（~10x 数据放大）
-5. **MLP 训练**：576 → 256 → 128 → N 动作分类
-6. **RL 强化**：策略梯度微调（可选）
+| 方面 | wzry_ai | 本项目 |
+|------|---------|--------|
+| 起步 | 随机策略 (ε=1.0) | BC 预训练热启动 |
+| 视觉 | 2层CNN从零训练 | MobileNetV3 预训练编码器 (576维) |
+| 动作空间 | 8维并行 (~950种) | 触控区域映射 (精简离散动作) |
+| 奖励 | 纯像素+OCR | 像素血条+灰屏死亡+颜色胜负 |
+| 网络 | 原始CNN+多头DQN | MobileNetV3特征+MLP DQN |
 
-训练产出：`model.pt` + `model.meta.json`
+王者荣耀预设内置了 wzry_ai 的按钮坐标和奖励区域配置。
 
 ## 约定
 
 - API key 通过环境变量读取，不写入代码或配置
-- 模型文件 `*.pt`、训练数据 `datasets/`、训练输出 `runs/` 通过 `.gitignore` 排除
+- 模型文件 `*.pt`、训练数据 `datasets/`、训练输出 `runs/`、录制 `recordings/` 通过 `.gitignore` 排除
 - 视频文件 `*.mp4` 不纳入版本控制
-
-# currentDate
-Today's date is 2026-03-26.
+- 硬件限制：CPU-only，使用 MobileNetV3-Small 作为视觉编码器

@@ -52,4 +52,21 @@ auto_train:
   llm_provider: claude
   llm_model: claude-sonnet-4-20250514
 
+# ── 手机端触控区域（横屏，参考 wzry_ai 项目） ──
+# 用于手机录制和自对弈
+touch_zones:
+  move:     {x: 0.164, y: 0.798, r: 0.10}
+  attack:   {x: 0.85,  y: 0.85,  r: 0.06}
+  skill_1:  {x: 0.71,  y: 0.874, r: 0.05}
+  skill_2:  {x: 0.76,  y: 0.69,  r: 0.05}
+  skill_3:  {x: 0.844, y: 0.58,  r: 0.05}
+  spell:    {x: 0.64,  y: 0.9,   r: 0.04}
+  recall:   {x: 0.518, y: 0.9,   r: 0.04}
+
+# ── 自对弈配置 ──
+selfplay:
+  profile: profiles/wzry_selfplay.yaml
+  bc_model_dir: ""
+  output_dir: runs/selfplay/wzry
+
 extra: {}

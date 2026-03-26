@@ -1,0 +1,131 @@
+# 王者荣耀自对弈配置
+# 参考 wzry_ai 项目的动作空间和按钮布局
+# 适用于 scrcpy + ADB 手机端操作
+
+name: wzry_selfplay
+display_name: 王者荣耀 自对弈
+game_type: moba
+
+# ── 触控区域（归一化坐标，横屏模式） ──
+# 参考 wzry_ai 的 argparses.py 按钮位置
+touch_zones:
+  move:
+    x: 0.164
+    y: 0.798
+    r: 0.10
+    description: 左侧摇杆（移动）
+
+  attack:
+    x: 0.85
+    y: 0.85
+    r: 0.06
+    description: 普攻
+
+  attack_minion:
+    x: 0.776
+    y: 0.91
+    r: 0.04
+    description: 攻击小兵
+
+  attack_tower:
+    x: 0.88
+    y: 0.71
+    r: 0.04
+    description: 攻击塔
+
+  skill_1:
+    x: 0.71
+    y: 0.874
+    r: 0.05
+    description: 1技能
+
+  skill_2:
+    x: 0.76
+    y: 0.69
+    r: 0.05
+    description: 2技能
+
+  skill_3:
+    x: 0.844
+    y: 0.58
+    r: 0.05
+    description: 3技能（大招）
+
+  spell:
+    x: 0.64
+    y: 0.9
+    r: 0.04
+    description: 召唤师技能
+
+  recall:
+    x: 0.518
+    y: 0.9
+    r: 0.04
+    description: 回城
+
+  heal:
+    x: 0.579
+    y: 0.9
+    r: 0.04
+    description: 恢复
+
+  equip_skill:
+    x: 0.84
+    y: 0.39
+    r: 0.04
+    description: 装备技能
+
+# ── 奖励检测区域（归一化坐标） ──
+reward_regions:
+  # 己方血条（左上角）
+  my_hp:
+    left: 0.03
+    top: 0.01
+    right: 0.18
+    bottom: 0.04
+    color_mode: green
+
+  # 敌方血条（顶部中间偏右，来自 wzry_ai getReword.py）
+  enemy_hp:
+    left: 0.57
+    top: 0.019
+    right: 0.686
+    bottom: 0.043
+    color_mode: red
+
+# ── 奖励值 ──
+rewards:
+  attack: 2.0         # 造成伤害
+  damage: -1.0        # 受到伤害
+  death: -10.0        # 死亡
+  win: 100.0          # 胜利
+  lose: -100.0        # 失败
+  idle_penalty: -0.1  # 无操作惩罚
+  action_bonus: 0.05  # 有操作基础奖励
+
+# ── DQN 超参 ──
+dqn:
+  lr: 0.0005
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay: 0.998
+  buffer_capacity: 50000
+  batch_size: 64
+  target_update_freq: 20
+
+# ── 状态检测 ──
+# 对局开始：检测到 "started" 类别（ONNX 模型）
+# 死亡：灰屏检测（饱和度 < 20 持续 3 帧）
+# 胜负：画面中央金色（胜利）/ 暗灰（失败）
+detection:
+  start_model: models/start.onnx    # 可选：对局开始检测
+  death_model: models/death.onnx    # 可选：死亡检测
+  # 如无 ONNX 模型，使用像素级启发式检测
+
+# ── 关联的 BC 模型目录 ──
+# 自对弈可以从此 BC 模型热启动
+bc_model_dir: ""
+
+# ── 输出 ──
+selfplay_output: runs/selfplay/wzry
