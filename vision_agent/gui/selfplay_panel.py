@@ -188,8 +188,9 @@ class SelfPlayPanel(QWidget):
 
         splitter.addWidget(left_scroll)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 4)
+        splitter.setSizes([420, 560])
 
         root.addWidget(splitter)
 

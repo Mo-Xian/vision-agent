@@ -140,31 +140,41 @@ class WorkshopPanel(QWidget):
         layout.setSpacing(10)
 
         # ━━━ 场景管理 ━━━
-        scene_group = QGroupBox("场景")
-        sg = QHBoxLayout(scene_group)
-        sg.setSpacing(6)
+        scene_group = QGroupBox("场景管理")
+        sg_layout = QVBoxLayout(scene_group)
+        sg_layout.setSpacing(6)
 
+        scene_row = QHBoxLayout()
         self.scene_combo = QComboBox()
         self.scene_combo.setMinimumWidth(160)
         self.scene_combo.setToolTip("选择或创建训练场景")
         self.scene_combo.currentTextChanged.connect(self._on_scene_selected)
-        sg.addWidget(self.scene_combo, 1)
+        scene_row.addWidget(self.scene_combo, 1)
 
         self.new_scene_btn = QPushButton("+ 新建")
         self.new_scene_btn.setObjectName("startBtn")
         self.new_scene_btn.setCursor(Qt.PointingHandCursor)
         self.new_scene_btn.clicked.connect(self._new_scene)
-        sg.addWidget(self.new_scene_btn)
+        scene_row.addWidget(self.new_scene_btn)
 
         self.delete_scene_btn = QPushButton("删除")
         self.delete_scene_btn.setObjectName("stopBtn")
         self.delete_scene_btn.setCursor(Qt.PointingHandCursor)
         self.delete_scene_btn.clicked.connect(self._delete_scene)
-        sg.addWidget(self.delete_scene_btn)
+        scene_row.addWidget(self.delete_scene_btn)
+        sg_layout.addLayout(scene_row)
+
+        # 场景描述（移入场景分组）
+        desc_row = QHBoxLayout()
+        desc_row.addWidget(QLabel("描述"))
+        self.description_input = QLineEdit()
+        self.description_input.setPlaceholderText("场景描述（可选，如：王者荣耀5v5团战）")
+        desc_row.addWidget(self.description_input, 1)
+        sg_layout.addLayout(desc_row)
 
         self.scene_status = QLabel("")
         self.scene_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        sg.addWidget(self.scene_status)
+        sg_layout.addWidget(self.scene_status)
 
         layout.addWidget(scene_group)
 
@@ -249,18 +259,9 @@ class WorkshopPanel(QWidget):
 
         layout.addWidget(source_group)
 
-        # 场景描述
-        desc_row = QHBoxLayout()
-        desc_row.addWidget(QLabel("描述"))
-        self.description_input = QLineEdit()
-        self.description_input.setPlaceholderText("场景描述（可选，如：王者荣耀5v5团战）")
-        desc_row.addWidget(self.description_input, 1)
-        layout.addLayout(desc_row)
-
-        # ━━━ 场景知识 ━━━
-        knowledge_group = QGroupBox("场景知识（可选，提升 LLM 分析准确度）")
-        kg = QVBoxLayout(knowledge_group)
-        kg.setSpacing(4)
+        # ━━━ 场景知识（折叠） ━━━
+        knowledge_section = CollapsibleSection("场景知识（可选，提升 LLM 分析准确度）")
+        kg = knowledge_section.content_layout()
 
         kb_btn_row = QHBoxLayout()
         self.kb_import_btn = QPushButton("导入文件")
@@ -282,18 +283,17 @@ class WorkshopPanel(QWidget):
         kg.addLayout(kb_btn_row)
 
         self.knowledge_input = QTextEdit()
-        self.knowledge_input.setMaximumHeight(120)
+        self.knowledge_input.setMaximumHeight(100)
         self.knowledge_input.setPlaceholderText(
             "输入或导入场景规则/教程，例如：\n"
             "• 这是王者荣耀5v5 MOBA 游戏\n"
             "• 核心操作：普攻、技能1/2/3、闪现、回城\n"
-            "• 血量低于30%应回城或撤退\n"
             "支持导入 .txt / .md / .json / .yaml 文件"
         )
         self.knowledge_input.textChanged.connect(self._on_knowledge_changed)
         kg.addWidget(self.knowledge_input)
 
-        layout.addWidget(knowledge_group)
+        layout.addWidget(knowledge_section)
 
         # ━━━ 核心操作 ━━━
         self.learn_btn = QPushButton("开始学习")
@@ -315,7 +315,7 @@ class WorkshopPanel(QWidget):
         self.stop_learn_btn.clicked.connect(self.stop_requested)
         layout.addWidget(self.stop_learn_btn)
 
-        # ━━━ 学习进度 ━━━
+        # ━━━ 学习进度 + 见解 ━━━
         progress_group = QGroupBox("学习进度")
         pg = QVBoxLayout(progress_group)
         pg.setSpacing(6)
@@ -330,20 +330,13 @@ class WorkshopPanel(QWidget):
         self.phase_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 12px;")
         pg.addWidget(self.phase_label)
 
-        layout.addWidget(progress_group)
-
-        # ━━━ LLM 见解 ━━━
-        insight_group = QGroupBox("LLM 见解")
-        ig = QVBoxLayout(insight_group)
-        ig.setSpacing(4)
-
         self.insight_text = QTextEdit()
         self.insight_text.setReadOnly(True)
-        self.insight_text.setMaximumHeight(120)
-        self.insight_text.setPlaceholderText("分析后显示 LLM 对视频内容的见解...")
-        ig.addWidget(self.insight_text)
+        self.insight_text.setMaximumHeight(100)
+        self.insight_text.setPlaceholderText("LLM 分析见解...")
+        pg.addWidget(self.insight_text)
 
-        layout.addWidget(insight_group)
+        layout.addWidget(progress_group)
 
         # ━━━ 模型管理 ━━━
         model_group = QGroupBox("训练产出")

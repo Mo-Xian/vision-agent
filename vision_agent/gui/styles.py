@@ -51,19 +51,25 @@ QGroupBox {{
     background-color: {COLORS['bg_card']};
     border: 1px solid {COLORS['border']};
     border-radius: 10px;
-    margin-top: 16px;
-    padding: 16px;
-    padding-top: 28px;
+    margin-top: 18px;
+    padding: 14px;
+    padding-top: 32px;
     color: {COLORS['text']};
     font-weight: 600;
     font-size: 13px;
 }}
 QGroupBox::title {{
     subcontrol-origin: margin;
-    left: 14px;
-    padding: 2px 8px;
+    subcontrol-position: top left;
+    left: 12px;
+    top: 4px;
+    padding: 3px 10px;
     font-size: 13px;
-    color: {COLORS['text']};
+    font-weight: 700;
+    color: {COLORS['accent']};
+    background-color: {COLORS['bg_card']};
+    border: 1px solid {COLORS['border']};
+    border-radius: 4px;
 }}
 
 /* ── 标签 ── */
