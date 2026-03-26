@@ -1,0 +1,124 @@
+name: 王者荣耀5v5
+display_name: 王者荣耀5v5
+yolo_model: none
+actions:
+- attack
+- skill_1
+- skill_2
+- skill_3
+- summoner_skill
+- move_forward
+- retreat
+- move_to_lane
+- last_hit
+- jungle
+- push_tower
+- defend_tower
+- recall
+- buy_item
+- check_map
+- signal
+- idle
+action_key_map:
+  attack:
+    type: keyboard
+    action: press
+    key: q
+  skill_1:
+    type: keyboard
+    action: press
+    key: w
+  skill_2:
+    type: keyboard
+    action: press
+    key: e
+  skill_3:
+    type: keyboard
+    action: press
+    key: r
+  summoner_skill:
+    type: keyboard
+    action: press
+    key: t
+  move_forward:
+    type: keyboard
+    action: press
+    key: y
+  retreat:
+    type: keyboard
+    action: press
+    key: u
+  move_to_lane:
+    type: keyboard
+    action: press
+    key: i
+  last_hit:
+    type: keyboard
+    action: press
+    key: o
+  jungle:
+    type: keyboard
+    action: press
+    key: p
+  push_tower:
+    type: keyboard
+    action: press
+    key: q
+  defend_tower:
+    type: keyboard
+    action: press
+    key: w
+  recall:
+    type: keyboard
+    action: press
+    key: e
+  buy_item:
+    type: keyboard
+    action: press
+    key: r
+  check_map:
+    type: keyboard
+    action: press
+    key: t
+  signal:
+    type: keyboard
+    action: press
+    key: y
+action_descriptions:
+  attack: 普通攻击，用于对敌方英雄、小兵、野怪造成持续伤害
+  skill_1: 释放技能1（主技能），CD较短，用于主要输出或控制
+  skill_2: 释放技能2，通常为位移技能或辅助技能
+  skill_3: 释放大招，强力技能，CD较长，4级解锁，适合团战开团或收割
+  summoner_skill: 释放召唤师技能（闪现/惩戒/治疗等）
+  move_forward: 向前移动/靠近敌人，适用于追击或参团
+  retreat: 撤退/后退，当血量低或敌方多人时撤离
+  move_to_lane: 回到线上或去其他路线支援/游走
+  last_hit: 补刀，等小兵残血时攻击获取额外金币
+  jungle: 打野，攻击野区中立怪物获取经验和金币
+  push_tower: 推塔，攻击敌方防御塔扩大优势
+  defend_tower: 守塔，在己方塔下防御敌方进攻
+  recall: 回城，长按回城键返回泉水补血和购买装备
+  buy_item: 购买装备，在泉水或通过快捷购买装备
+  check_map: 查看小地图，关注敌方动向、队友位置和资源刷新
+  signal: 发信号，通知队友进攻/撤退/集合
+  idle: 等待/观察，不确定时原地观察局势
+decision_model_dir: runs\e2e_real_llm\20260326_134132\model
+decision_engine: trained
+roi_regions: {}
+scene_keywords:
+- 王者荣耀
+- Honor of Kings
+- MOBA
+- 5v5对战
+- 技能
+- 团战
+- 防御塔
+- 小兵
+- 小地图
+- 暴君
+- 主宰
+- 技能特效
+- 击杀播报
+auto_train:
+  enabled: true
+  source: workshop

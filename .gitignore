@@ -38,6 +38,9 @@ runs/
 .vscode/
 *.swp
 
+# Binaries
+*.exe
+
 # OS
 .DS_Store
 Thumbs.db

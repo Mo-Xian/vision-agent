@@ -244,29 +244,47 @@ class AutoLearnDialog(QDialog):
                     self.stop_btn.setEnabled(False)
                     return
 
-        from ..auto.auto_learn import AutoLearn
-
-        self._learner = AutoLearn(
-            llm_provider_name=provider,
-            llm_api_key=api_key,
-            llm_model=self.llm_model.text().strip(),
-            llm_base_url=self.llm_base_url.text().strip(),
-            yolo_model=self.yolo_model.currentText(),
-            on_log=lambda msg: self.log_signal.emit(msg),
-            on_progress=lambda phase, pct: self.progress_signal.emit(phase, pct),
-            bilibili_cookie=self.bilibili_cookie.text().strip(),
-        )
-
-        kwargs = {
-            "interest": interest,
-            "resource_type": self.resource_type.currentText(),
-            "max_resources": self.max_resources.value(),
-            "sample_count": self.sample_count.value(),
-            "rl_steps": self.rl_steps.value(),
-            "skip_fetch": self.skip_fetch.isChecked(),
-            "video_paths": video_paths,
-            "source": self.source_combo.currentText(),
-        }
+        # 优先使用 workshop.LearningPipeline；若本地视频可用则直接走 workshop
+        use_workshop = self.skip_fetch.isChecked() and video_paths
+        if use_workshop:
+            from ..workshop import LearningPipeline
+            self._learner = LearningPipeline(
+                llm_provider_name=provider,
+                llm_api_key=api_key,
+                llm_model=self.llm_model.text().strip(),
+                llm_base_url=self.llm_base_url.text().strip(),
+                yolo_model=self.yolo_model.currentText(),
+                on_log=lambda msg: self.log_signal.emit(msg),
+                on_progress=lambda phase, pct: self.progress_signal.emit(phase, pct),
+            )
+            kwargs = {
+                "video_paths": video_paths,
+                "description": interest,
+                "sample_count": self.sample_count.value(),
+                "rl_steps": self.rl_steps.value(),
+            }
+        else:
+            from ..auto.auto_learn import AutoLearn
+            self._learner = AutoLearn(
+                llm_provider_name=provider,
+                llm_api_key=api_key,
+                llm_model=self.llm_model.text().strip(),
+                llm_base_url=self.llm_base_url.text().strip(),
+                yolo_model=self.yolo_model.currentText(),
+                on_log=lambda msg: self.log_signal.emit(msg),
+                on_progress=lambda phase, pct: self.progress_signal.emit(phase, pct),
+                bilibili_cookie=self.bilibili_cookie.text().strip(),
+            )
+            kwargs = {
+                "interest": interest,
+                "resource_type": self.resource_type.currentText(),
+                "max_resources": self.max_resources.value(),
+                "sample_count": self.sample_count.value(),
+                "rl_steps": self.rl_steps.value(),
+                "skip_fetch": self.skip_fetch.isChecked(),
+                "video_paths": video_paths,
+                "source": self.source_combo.currentText(),
+            }
 
         self._worker_thread = threading.Thread(
             target=self._run_worker, args=(kwargs,), daemon=True
@@ -275,7 +293,12 @@ class AutoLearnDialog(QDialog):
 
     def _run_worker(self, kwargs):
         try:
-            result = self._learner.run(**kwargs)
+            # LearningPipeline 用 learn_from_videos, AutoLearn 用 run
+            if hasattr(self._learner, 'learn_from_videos'):
+                lr = self._learner.learn_from_videos(**kwargs)
+                result = lr.to_dict() if hasattr(lr, 'to_dict') else {}
+            else:
+                result = self._learner.run(**kwargs)
             self.done_signal.emit(result)
         except Exception as e:
             self.log_signal.emit(f"[错误] {e}")

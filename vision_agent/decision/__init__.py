@@ -8,3 +8,4 @@ from .llm_provider import (
 )
 from .hierarchical import HierarchicalEngine
 from .rl_engine import RLEngine, RewardDetector
+from .e2e_engine import E2EEngine
