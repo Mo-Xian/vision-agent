@@ -436,6 +436,8 @@ class MainWindow(QMainWindow):
             on_train_step=lambda loss, tacc, vacc: self._learn_chart_point.emit(loss, tacc, vacc),
         )
 
+        vs_config = wp.get_video_source_config()
+
         kwargs = {
             "recording_dirs": recording_dirs,
             "description": wp.description_input.text().strip(),
@@ -444,6 +446,10 @@ class MainWindow(QMainWindow):
             "device_serial": device_serial,
             "selfplay_preset": sp_config.get("preset", ""),
             "selfplay_episodes": sp_config.get("max_episodes", 0),
+            "video_sources": vs_config.get("video_sources", []),
+            "max_improve_rounds": vs_config.get("max_improve_rounds", 3),
+            "max_videos_per_round": vs_config.get("max_videos_per_round", 5),
+            "max_video_duration": vs_config.get("max_video_duration", 600),
         }
 
         def _run():

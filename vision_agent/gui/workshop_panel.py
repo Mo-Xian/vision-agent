@@ -438,7 +438,40 @@ class WorkshopPanel(QWidget):
         self.sp_preset_combo.addItems(["wzry - 王者荣耀", "fps - FPS 射击", "generic - 通用"])
         train_form.addRow("RL 游戏预设", self.sp_preset_combo)
 
+        self.improve_rounds_spin = QSpinBox()
+        self.improve_rounds_spin.setRange(0, 10)
+        self.improve_rounds_spin.setValue(3)
+        self.improve_rounds_spin.setToolTip("0 = 不自动搜索在线视频，仅用用户提供的数据")
+        train_form.addRow("自主改进轮数", self.improve_rounds_spin)
+
+        self.max_videos_spin = QSpinBox()
+        self.max_videos_spin.setRange(1, 20)
+        self.max_videos_spin.setValue(5)
+        self.max_videos_spin.setToolTip("每轮自主改进最多下载的视频数量")
+        train_form.addRow("每轮下载视频数", self.max_videos_spin)
+
+        self.max_duration_spin = QSpinBox()
+        self.max_duration_spin.setRange(60, 3600)
+        self.max_duration_spin.setValue(600)
+        self.max_duration_spin.setSuffix(" 秒")
+        self.max_duration_spin.setToolTip("超过此时长的视频将被跳过")
+        train_form.addRow("视频最大时长", self.max_duration_spin)
+
         mg.addLayout(train_form)
+
+        # 自主学习视频源
+        vs_label = QLabel("自主学习视频源（每行一个 URL，支持 Bilibili/YouTube 等）")
+        vs_label.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        mg.addWidget(vs_label)
+
+        self.video_sources_input = QTextEdit()
+        self.video_sources_input.setMaximumHeight(72)
+        self.video_sources_input.setPlaceholderText(
+            "留空则由 LLM 自动搜索。填写后优先从这些 URL 下载：\n"
+            "https://www.bilibili.com/video/BVxxxxxx\n"
+            "https://www.youtube.com/watch?v=xxxxxx"
+        )
+        mg.addWidget(self.video_sources_input)
 
         layout.addWidget(more)
         layout.addStretch()
@@ -454,6 +487,17 @@ class WorkshopPanel(QWidget):
         text = self.sp_preset_combo.currentText()
         preset_name = text.split(" - ")[0].strip()
         return {"preset": preset_name}
+
+    def get_video_source_config(self) -> dict:
+        """获取自主学习视频源配置。"""
+        raw = self.video_sources_input.toPlainText().strip()
+        urls = [line.strip() for line in raw.splitlines() if line.strip().startswith("http")]
+        return {
+            "video_sources": urls,
+            "max_improve_rounds": self.improve_rounds_spin.value(),
+            "max_videos_per_round": self.max_videos_spin.value(),
+            "max_video_duration": self.max_duration_spin.value(),
+        }
 
     # ── 录制源切换 ──
 

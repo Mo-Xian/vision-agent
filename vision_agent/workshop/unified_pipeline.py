@@ -178,6 +178,9 @@ class UnifiedPipeline(LoggingMixin):
         confidence_threshold: float = 0.85,
         search_online: bool = True,
         max_improve_rounds: int = 3,
+        video_sources: list[str] | None = None,
+        max_videos_per_round: int = 5,
+        max_video_duration: int = 600,
     ) -> UnifiedResult:
         """一键启动统一学习流程。
 
@@ -186,6 +189,10 @@ class UnifiedPipeline(LoggingMixin):
         Args:
             max_improve_rounds: 自主改进最大轮数（搜索→下载→标注→训练）。
                 设为 0 则跳过自主搜索，只处理用户提供的视频。
+            video_sources: 用户配置的视频源 URL 列表。有则优先从这些 URL
+                下载，用完后再通过 LLM 搜索补充。
+            max_videos_per_round: 每轮最多下载视频数。
+            max_video_duration: 单个视频最大时长（秒）。
         """
         self._stop = False
         run_dir = self._output_dir / time.strftime("%Y%m%d_%H%M%S")
@@ -333,7 +340,18 @@ class UnifiedPipeline(LoggingMixin):
             return result
 
         # ── Round 1+: 自主搜索→下载→标注→训练 ──
-        if search_online and provider and model_dir and max_improve_rounds > 0:
+        #
+        # 视频获取优先级：
+        #   1. 用户配置的 video_sources URL → 直接下载（不需要搜索）
+        #   2. video_sources 用完后 → LLM 分析技能缺口 → 搜索 → 下载
+        #   3. 搜索也无结果 → 标记待人工
+
+        video_sources = list(video_sources or [])
+        has_user_sources = bool(video_sources)
+        can_auto_improve = (model_dir and max_improve_rounds > 0
+                            and (has_user_sources or (search_online and provider)))
+
+        if can_auto_improve:
             from .video_downloader import download_videos, is_ytdlp_available
 
             for round_num in range(1, max_improve_rounds + 1):
@@ -343,60 +361,90 @@ class UnifiedPipeline(LoggingMixin):
                 self._emit_log("=" * 50)
                 self._emit_log(f"Phase 2 Round {round_num}/{max_improve_rounds}: 自主改进")
 
-                # ─ 技能差距分析 ─
-                self._set_phase(LearningPhase.ASKING_COACH)
-                latest_metrics = (
-                    result.phase_history[-1].get("metrics", {})
-                    if result.phase_history else {}
-                )
-                skill_gaps = self._analyze_skill_gaps(
-                    provider, actions, description, knowledge, latest_metrics,
-                )
-                result.skill_gaps = skill_gaps
-
-                if not skill_gaps:
-                    self._emit_log("  教练认为无明显技能缺口，停止自主改进")
-                    break
-
-                self._emit_log(f"  技能缺口: {', '.join(skill_gaps[:5])}")
-
-                # ─ 搜索在线视频 ─
-                self._set_phase(LearningPhase.SEARCHING_VIDEOS)
-                suggestions = self._suggest_search_queries(
-                    provider, description, skill_gaps,
-                )
-                if not suggestions:
-                    self._emit_log("  无搜索建议，停止自主改进")
-                    break
-
-                search_results = self._search_online(provider, suggestions)
-                if not search_results:
-                    self._emit_log("  搜索无结果，停止自主改进")
-                    break
-
-                self._emit_log(f"  找到 {len(search_results)} 个相关资源")
-
-                # ─ 自动下载视频 ─
-                urls = [r.get("url", "") for r in search_results]
                 download_dir = str(run_dir / f"downloads_round{round_num}")
+                downloaded = []
 
-                if is_ytdlp_available():
-                    downloaded = download_videos(
-                        urls, download_dir,
-                        max_count=5, max_duration=600,
-                        on_log=self._on_log,
+                # ─ 策略 A: 用户配置的视频源（优先） ─
+                if video_sources:
+                    batch_urls = video_sources[:max_videos_per_round]
+                    video_sources = video_sources[max_videos_per_round:]
+                    self._emit_log(f"  从配置视频源下载 ({len(batch_urls)} 个 URL)...")
+
+                    if is_ytdlp_available():
+                        downloaded = download_videos(
+                            batch_urls, download_dir,
+                            max_count=max_videos_per_round,
+                            max_duration=max_video_duration,
+                            on_log=self._on_log,
+                        )
+                    else:
+                        self._emit_log("  [提示] yt-dlp 未安装，请运行: pip install yt-dlp")
+                        result.human_review_items.append({
+                            "type": "download_videos",
+                            "reason": f"Round {round_num}: 请安装 yt-dlp 或手动下载以下视频",
+                            "urls": batch_urls,
+                        })
+                        break
+
+                # ─ 策略 B: LLM 搜索在线视频 ─
+                elif search_online and provider:
+                    # 技能差距分析
+                    self._set_phase(LearningPhase.ASKING_COACH)
+                    latest_metrics = (
+                        result.phase_history[-1].get("metrics", {})
+                        if result.phase_history else {}
                     )
+                    skill_gaps = self._analyze_skill_gaps(
+                        provider, actions, description, knowledge, latest_metrics,
+                    )
+                    result.skill_gaps = skill_gaps
+
+                    if not skill_gaps:
+                        self._emit_log("  教练认为无明显技能缺口，停止自主改进")
+                        break
+
+                    self._emit_log(f"  技能缺口: {', '.join(skill_gaps[:5])}")
+
+                    # 搜索在线视频
+                    self._set_phase(LearningPhase.SEARCHING_VIDEOS)
+                    suggestions = self._suggest_search_queries(
+                        provider, description, skill_gaps,
+                    )
+                    if not suggestions:
+                        self._emit_log("  无搜索建议，停止自主改进")
+                        break
+
+                    search_results = self._search_online(provider, suggestions)
+                    if not search_results:
+                        self._emit_log("  搜索无结果，停止自主改进")
+                        break
+
+                    self._emit_log(f"  找到 {len(search_results)} 个相关资源")
+
+                    # 下载
+                    urls = [r.get("url", "") for r in search_results]
+                    if is_ytdlp_available():
+                        downloaded = download_videos(
+                            urls, download_dir,
+                            max_count=max_videos_per_round,
+                            max_duration=max_video_duration,
+                            on_log=self._on_log,
+                        )
+                    else:
+                        downloaded = []
+
+                    if not downloaded:
+                        self._emit_log("  无法自动下载视频，标记待人工处理")
+                        result.human_review_items.append({
+                            "type": "download_videos",
+                            "reason": f"Round {round_num}: 搜索到视频但无法自动下载，请手动下载后导入",
+                            "search_results": search_results[:10],
+                        })
+                        break
                 else:
-                    downloaded = []
+                    break  # 无视频源也无搜索能力
 
                 if not downloaded:
-                    # 无法自动下载 → 标记待人工，退出循环
-                    self._emit_log("  无法自动下载视频，标记待人工处理")
-                    result.human_review_items.append({
-                        "type": "download_videos",
-                        "reason": f"Round {round_num}: 搜索到视频但无法自动下载，请手动下载后导入",
-                        "search_results": search_results[:10],
-                    })
                     break
 
                 # ─ 伪标签 + 重新训练 ─
