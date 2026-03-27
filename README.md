@@ -17,19 +17,19 @@
 
 ### 训练工坊
 
-录制操作、行为克隆训练、伪标签扩展、RL 自对弈，全部在一个面板完成。
+场景管理、录制操作、行为克隆训练、自主改进循环、RL 蒸馏，全部在一个面板完成。
 
 ![训练工坊](docs/screenshots/mode_train.png)
 
 ### Agent 部署
 
-连接手机设备，加载训练好的模型（BC 或 DQN），Agent 自动接管游戏操作并显示实时画面。
+连接手机/PC，选择训练好的模型，Agent 自动检测模型类型并接管游戏操作，实时显示画面。
 
 ![Agent 部署](docs/screenshots/mode_agent.png)
 
 ### LLM 配置
 
-LLM 连接配置，训练工坊的 LLM Coach 和伪标签扩展共用此配置。
+LLM 连接配置，训练工坊的 LLM Coach、动作发现、伪标签扩展共用此配置。
 
 ![LLM 配置](docs/screenshots/mode_llm.png)
 
