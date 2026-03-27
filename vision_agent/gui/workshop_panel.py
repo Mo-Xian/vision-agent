@@ -185,7 +185,11 @@ class WorkshopPanel(QWidget):
         source_row = QHBoxLayout()
         source_row.addWidget(QLabel("录制源"))
         self.source_combo = QComboBox()
-        self.source_combo.addItems(["PC（窗口捕获 + 键鼠）", "手机（scrcpy + ADB 触控）"])
+        self.source_combo.addItems([
+            "PC（窗口捕获 + 键鼠）",
+            "手机（scrcpy + ADB 触控）",
+            "远程 PC（WebSocket 连接）",
+        ])
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         source_row.addWidget(self.source_combo, 1)
         rec_layout.addLayout(source_row)
@@ -250,6 +254,37 @@ class WorkshopPanel(QWidget):
 
         rec_layout.addWidget(self.mobile_source_widget)
         self.mobile_source_widget.setVisible(False)
+
+        # -- 远程 PC 模式控件 --
+        self.remote_source_widget = QWidget()
+        remote_layout = QVBoxLayout(self.remote_source_widget)
+        remote_layout.setContentsMargins(0, 0, 0, 0)
+        remote_layout.setSpacing(4)
+
+        host_row = QHBoxLayout()
+        host_row.addWidget(QLabel("地址"))
+        self.remote_host_input = QLineEdit()
+        self.remote_host_input.setPlaceholderText("远程 PC IP，如 192.168.1.100")
+        host_row.addWidget(self.remote_host_input, 1)
+        host_row.addWidget(QLabel(":"))
+        self.remote_port_spin = QSpinBox()
+        self.remote_port_spin.setRange(1, 65535)
+        self.remote_port_spin.setValue(9876)
+        self.remote_port_spin.setMaximumWidth(70)
+        host_row.addWidget(self.remote_port_spin)
+        self.test_remote_btn = QPushButton("测试")
+        self.test_remote_btn.setObjectName("browseBtn")
+        self.test_remote_btn.setMaximumWidth(50)
+        self.test_remote_btn.clicked.connect(self._test_remote_connection)
+        host_row.addWidget(self.test_remote_btn)
+        remote_layout.addLayout(host_row)
+
+        self.remote_status = QLabel("")
+        self.remote_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        remote_layout.addWidget(self.remote_status)
+
+        rec_layout.addWidget(self.remote_source_widget)
+        self.remote_source_widget.setVisible(False)
 
         rec_btn_row = QHBoxLayout()
         self.record_start_btn = QPushButton("开始录制")
@@ -514,17 +549,56 @@ class WorkshopPanel(QWidget):
     # ── 录制源切换 ──
 
     def _on_source_changed(self, index: int):
-        is_mobile = (index == 1)
-        self.pc_source_widget.setVisible(not is_mobile)
-        self.mobile_source_widget.setVisible(is_mobile)
-        if is_mobile:
+        self.pc_source_widget.setVisible(index == 0)
+        self.mobile_source_widget.setVisible(index == 1)
+        self.remote_source_widget.setVisible(index == 2)
+        if index == 0:
+            self.rec_info.setText("录制你的游戏操作，自动生成训练数据。F9 暂停/恢复。")
+        elif index == 1:
             self.rec_info.setText("录制手机游戏操作（scrcpy 投屏 + ADB 触摸采集）。需要 USB 调试。")
             self._refresh_device_list()
         else:
-            self.rec_info.setText("录制你的游戏操作，自动生成训练数据。F9 暂停/恢复。")
+            self.rec_info.setText(
+                "连接远程 PC 采集服务，实时录制。"
+                "需先在远程 PC 运行: python remote_capture_server.py"
+            )
 
     def is_mobile_source(self) -> bool:
         return self.source_combo.currentIndex() == 1
+
+    def is_remote_source(self) -> bool:
+        return self.source_combo.currentIndex() == 2
+
+    def get_remote_config(self) -> tuple[str, int]:
+        """返回 (host, port)。"""
+        host = self.remote_host_input.text().strip()
+        port = self.remote_port_spin.value()
+        return host, port
+
+    def _test_remote_connection(self):
+        host, port = self.get_remote_config()
+        if not host:
+            self.remote_status.setText("请输入远程 PC 的 IP 地址")
+            self.remote_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
+            return
+
+        self.remote_status.setText("测试连接中...")
+        self.remote_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        self.test_remote_btn.setEnabled(False)
+
+        import threading
+
+        def _test():
+            from ..data.remote_recorder import RemoteRecorder
+            ok, msg = RemoteRecorder.test_connection(host, port, timeout=5)
+            from PySide6.QtCore import QMetaObject, Qt as _Qt, Q_ARG
+            color = COLORS['accent'] if ok else COLORS['error']
+            # 使用 signal 更新 UI
+            self.remote_status.setText(msg)
+            self.remote_status.setStyleSheet(f"color: {color}; font-size: 11px;")
+            self.test_remote_btn.setEnabled(True)
+
+        threading.Thread(target=_test, daemon=True).start()
 
     def get_mobile_device(self) -> str:
         data = self.mobile_device_combo.currentData()

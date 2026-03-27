@@ -10,6 +10,12 @@
     python main.py mobile --zones touch_zones.json       # 自定义区域
     python main.py mobile --check                        # 检查环境
 
+    # 远程 PC 录制
+    python main.py serve                                 # 远程 PC 运行采集服务
+    python main.py serve --window "王者荣耀" --fps 15    # 指定窗口
+    python main.py remote 192.168.1.100                  # 本机连接并录制
+    python main.py remote 192.168.1.100 --test           # 测试连接
+
     # 从录制数据学习
     python main.py learn-bc recordings/session1 recordings/session2
 
@@ -201,6 +207,58 @@ def cmd_mobile(args):
     print(f"  输出: {stats.output_dir}")
 
 
+def cmd_remote(args):
+    """远程 PC 录制（连接远程采集服务）。"""
+    from vision_agent.data.remote_recorder import RemoteRecorder
+
+    if args.test:
+        ok, msg = RemoteRecorder.test_connection(args.host, args.port)
+        print(f"{'连接成功' if ok else '连接失败'}: {msg}")
+        sys.exit(0 if ok else 1)
+
+    recorder = RemoteRecorder(
+        host=args.host,
+        port=args.port,
+        output_dir=args.output,
+        on_log=lambda msg: print(msg),
+    )
+
+    print(f"连接远程采集服务 {args.host}:{args.port}...")
+    print("按 Ctrl+C 停止录制")
+    recorder.start()
+
+    try:
+        import time
+        while recorder.is_recording:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        pass
+
+    stats = recorder.stop()
+    print(f"\n录制完成!")
+    print(f"  帧数: {stats.total_frames}")
+    print(f"  时长: {stats.duration_sec:.0f}s")
+    print(f"  事件: {stats.total_events}")
+    print(f"  输出: {stats.output_dir}")
+
+
+def cmd_serve(args):
+    """启动远程画面采集服务（在远程 PC 上运行）。"""
+    from vision_agent.data.remote_capture_server import RemoteCaptureServer
+
+    server = RemoteCaptureServer(
+        fps=args.fps,
+        window_title=args.window,
+        port=args.port,
+        jpeg_quality=args.quality,
+    )
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\n[采集服务] 已停止")
+        server.stop()
+
+
 def cmd_self_play(args):
     """RL 自对弈学习。"""
     import json as _json
@@ -315,6 +373,20 @@ def main():
     p_mob.add_argument("-d", "--device", default="", help="ADB 设备序列号（多设备时指定）")
     p_mob.add_argument("--check", action="store_true", help="检查环境（adb/scrcpy/设备）")
 
+    # remote 子命令（远程 PC 录制）
+    p_remote = sub.add_parser("remote", help="远程 PC 录制（连接远程采集服务）")
+    p_remote.add_argument("host", help="远程 PC IP 地址")
+    p_remote.add_argument("-p", "--port", type=int, default=9876, help="端口 (默认: 9876)")
+    p_remote.add_argument("-o", "--output", default="recordings/remote", help="输出目录")
+    p_remote.add_argument("--test", action="store_true", help="仅测试连接")
+
+    # serve 子命令（远程采集服务端）
+    p_serve = sub.add_parser("serve", help="启动远程画面采集服务（在远程 PC 运行）")
+    p_serve.add_argument("-p", "--port", type=int, default=9876, help="端口 (默认: 9876)")
+    p_serve.add_argument("--fps", type=int, default=10, help="截屏帧率 (默认: 10)")
+    p_serve.add_argument("-w", "--window", default="", help="窗口标题（模糊匹配），空=全屏")
+    p_serve.add_argument("--quality", type=int, default=80, help="JPEG 质量 1-100 (默认: 80)")
+
     # learn-bc 子命令（行为克隆）
     p_bc = sub.add_parser("learn-bc", help="从录制数据学习（行为克隆，推荐）")
     p_bc.add_argument("recordings", nargs="+", help="录制目录路径")
@@ -373,6 +445,10 @@ def main():
         cmd_record(args)
     elif args.command == "mobile":
         cmd_mobile(args)
+    elif args.command == "remote":
+        cmd_remote(args)
+    elif args.command == "serve":
+        cmd_serve(args)
     elif args.command == "learn-bc":
         cmd_learn_bc(args)
     elif args.command == "expand":

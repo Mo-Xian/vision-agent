@@ -321,7 +321,23 @@ class MainWindow(QMainWindow):
         else:
             rec_dir = f"recordings/{_time.strftime('%Y%m%d_%H%M%S')}"
 
-        if wp.is_mobile_source():
+        if wp.is_remote_source():
+            # 远程 PC 录制
+            from ..data.remote_recorder import RemoteRecorder
+            host, port = wp.get_remote_config()
+            if not host:
+                self._log("[录制] 请输入远程 PC 的 IP 地址")
+                return
+            self._recorder = RemoteRecorder(
+                host=host,
+                port=port,
+                output_dir=rec_dir,
+                on_log=lambda msg: self._learn_log.emit(msg),
+            )
+            self._recorder.start()
+            wp.set_recording_state(True)
+            self._log(f"[录制] 远程 PC 录制开始 ({host}:{port})...")
+        elif wp.is_mobile_source():
             # 手机录制
             from ..data.mobile_recorder import MobileRecorder
             device = wp.get_mobile_device()
