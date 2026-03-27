@@ -421,6 +421,10 @@ class SelfPlayPanel(QWidget):
     def get_agent_model_dir(self) -> str:
         return self.agent_model_path.text().strip()
 
+    def set_model_dir(self, path: str):
+        """设置模型目录（供外部调用，如学习完成后自动填入）。"""
+        self.agent_model_path.setText(path)
+
     def set_agent_running_state(self, running: bool):
         self.agent_start_btn.setEnabled(not running)
         self.agent_stop_btn.setEnabled(running)

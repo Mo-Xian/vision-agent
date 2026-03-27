@@ -15,14 +15,25 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+_EMBED_DIM = 576
+_INITIAL_CAPACITY = 1024
+
+
 class E2EDataset:
     """端到端数据集：管理嵌入向量和动作标签。"""
 
     def __init__(self):
-        self.embeddings: list[np.ndarray] = []  # 每个 (576,)
+        # Pre-allocated buffer that doubles in capacity when full
+        self._embeddings_buf: np.ndarray = np.empty((_INITIAL_CAPACITY, _EMBED_DIM), dtype=np.float32)
+        self._count: int = 0
         self.labels: list[int] = []
         self.action_map: dict[str, int] = {}  # action_name → index
         self._action_list: list[str] = []      # index → action_name
+
+    @property
+    def embeddings(self) -> np.ndarray:
+        """返回已填充部分的视图（无拷贝）。"""
+        return self._embeddings_buf[:self._count]
 
     def set_actions(self, actions: list[str]):
         """设置动作空间。"""
@@ -33,7 +44,14 @@ class E2EDataset:
         """添加一个样本。"""
         if action not in self.action_map:
             return
-        self.embeddings.append(embedding.astype(np.float32))
+        # Grow buffer if full
+        if self._count >= len(self._embeddings_buf):
+            new_capacity = len(self._embeddings_buf) * 2
+            new_buf = np.empty((new_capacity, self._embeddings_buf.shape[1]), dtype=np.float32)
+            new_buf[:self._count] = self._embeddings_buf[:self._count]
+            self._embeddings_buf = new_buf
+        self._embeddings_buf[self._count] = embedding.astype(np.float32)
+        self._count += 1
         self.labels.append(self.action_map[action])
 
     @property
@@ -45,14 +63,14 @@ class E2EDataset:
         return list(self._action_list)
 
     def __len__(self) -> int:
-        return len(self.labels)
+        return self._count
 
     def save(self, path: str):
         """保存数据集到 .npz 文件。"""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         np.savez(
             path,
-            embeddings=np.array(self.embeddings, dtype=np.float32),
+            embeddings=self._embeddings_buf[:self._count],  # slice view, no copy needed
             labels=np.array(self.labels, dtype=np.int64),
             action_map=json.dumps(self.action_map, ensure_ascii=False),
             action_list=json.dumps(self._action_list, ensure_ascii=False),
@@ -64,7 +82,13 @@ class E2EDataset:
         """从 .npz 文件加载数据集。"""
         data = np.load(path, allow_pickle=False)
         ds = cls()
-        ds.embeddings = list(data["embeddings"])
+        loaded_embeddings: np.ndarray = data["embeddings"].astype(np.float32)
+        n = len(loaded_embeddings)
+        embed_dim = loaded_embeddings.shape[1] if loaded_embeddings.ndim == 2 else _EMBED_DIM
+        capacity = max(_INITIAL_CAPACITY, n)
+        ds._embeddings_buf = np.empty((capacity, embed_dim), dtype=np.float32)
+        ds._embeddings_buf[:n] = loaded_embeddings
+        ds._count = n
         ds.labels = list(data["labels"])
         ds.action_map = json.loads(str(data["action_map"]))
         ds._action_list = json.loads(str(data["action_list"]))
@@ -74,7 +98,7 @@ class E2EDataset:
     def to_tensors(self):
         """转换为 PyTorch 张量，用于训练。"""
         import torch
-        X = torch.tensor(np.array(self.embeddings, dtype=np.float32))
+        X = torch.tensor(self._embeddings_buf[:self._count])
         y = torch.tensor(np.array(self.labels, dtype=np.int64))
         return X, y
 

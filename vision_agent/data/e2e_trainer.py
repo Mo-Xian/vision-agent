@@ -74,6 +74,7 @@ class E2ETrainer:
         lr: float = 0.001,
         batch_size: int = 32,
         val_ratio: float = 0.2,
+        patience: int = 20,
         progress_callback=None,
         on_log=None,
     ):
@@ -84,6 +85,7 @@ class E2ETrainer:
         self._lr = lr
         self._batch_size = batch_size
         self._val_ratio = val_ratio
+        self._patience = patience
         self._progress_callback = progress_callback
         self._on_log = on_log
 
@@ -127,6 +129,7 @@ class E2ETrainer:
 
         best_val_acc = 0.0
         best_epoch = 0
+        no_improve_count = 0
         history = {"train_loss": [], "train_acc": [], "val_acc": []}
 
         for epoch in range(1, self._epochs + 1):
@@ -162,11 +165,14 @@ class E2ETrainer:
             history["train_acc"].append(round(train_acc, 4))
             history["val_acc"].append(round(val_acc, 4))
 
-            # 保存最佳
+            # 保存最佳 + 早停计数
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 best_epoch = epoch
+                no_improve_count = 0
                 self._save_model(model, ds, best_val_acc)
+            else:
+                no_improve_count += 1
 
             if epoch % 10 == 0 or epoch == 1:
                 self._log(
@@ -180,6 +186,11 @@ class E2ETrainer:
                     self._progress_callback(epoch, self._epochs, train_loss, train_acc, val_acc)
                 except Exception as e:
                     logger.debug(f"progress_callback 异常: {e}")
+
+            # 早停
+            if no_improve_count >= self._patience:
+                self._log(f"[E2E] Early stopping at epoch {epoch}")
+                break
 
         self._log(f"[E2E] 训练完成: best_val_acc={best_val_acc:.3f} @ epoch {best_epoch}")
 

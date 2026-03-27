@@ -91,6 +91,7 @@ class UnifiedPipeline(LoggingMixin):
         on_progress=None,
         on_phase_change=None,
         on_need_human=None,
+        on_train_step=None,
     ):
         self._llm_provider_name = llm_provider_name
         self._llm_api_key = llm_api_key
@@ -101,6 +102,7 @@ class UnifiedPipeline(LoggingMixin):
         self._on_progress = on_progress
         self._on_phase_change = on_phase_change
         self._on_need_human = on_need_human
+        self._on_train_step = on_train_step
         self._stop = False
         self._provider = None
         self._phase = LearningPhase.IDLE
@@ -126,6 +128,20 @@ class UnifiedPipeline(LoggingMixin):
                 self._on_progress(self._phase.value, pct, detail)
             except Exception:
                 pass
+
+    def _make_train_callback(self, progress_base: float, progress_range: float):
+        """创建训练回调，同时更新进度条和图表。"""
+        def callback(epoch, total, loss, train_acc, val_acc):
+            self._progress(
+                progress_base + progress_range * epoch / max(total, 1),
+                f"训练 {epoch}/{total}",
+            )
+            if self._on_train_step:
+                try:
+                    self._on_train_step(loss, train_acc, val_acc)
+                except Exception:
+                    pass
+        return callback
 
     def _create_provider(self):
         if self._provider is None:
@@ -217,6 +233,8 @@ class UnifiedPipeline(LoggingMixin):
                 output_dir=str(run_dir / "bc"),
                 on_log=self._on_log,
                 on_progress=lambda phase, pct: self._progress(pct * 0.3, f"BC: {phase}"),
+                on_train_step=self._on_train_step,
+                provider=provider,  # 复用已创建的 LLM provider
             )
 
             bc_result = bc_pipeline.learn_from_recordings(
@@ -362,9 +380,14 @@ class UnifiedPipeline(LoggingMixin):
                 "bc_model": model_dir,
             })
 
-            # 自对弈需要实时设备交互，通过信号通知 GUI 启动
-            # 这里只记录配置，实际执行由 main_window 的 SelfPlayLoop 处理
-            self._emit_log("  RL 自对弈已就绪，请在 Agent 部署 Tab 启动")
+            # 记录 RL 配置供 GUI 在学习完成后自动提示启动
+            result.coach_advice["rl_ready"] = {
+                "device": device_serial,
+                "preset": selfplay_preset,
+                "bc_model": model_dir,
+                "episodes": selfplay_episodes,
+            }
+            self._emit_log("  RL 自对弈配置已就绪，学习完成后将提示启动")
         elif not device_serial:
             self._emit_log("─" * 30)
             self._emit_log("[提示] 未连接设备，跳过自对弈实践。连接手机后可在训练工坊启动 RL。")
@@ -635,7 +658,7 @@ class UnifiedPipeline(LoggingMixin):
 
                 batch_frames.append(frame)
 
-                if len(batch_frames) >= 16:
+                if len(batch_frames) >= 32:
                     self._classify_batch(
                         encoder, model, batch_frames, actions,
                         confidence_threshold, low_confidence_threshold,
@@ -668,7 +691,13 @@ class UnifiedPipeline(LoggingMixin):
         # ── 询问 LLM 教练处理中等置信度帧 ──
         if coach and coach_batch_frames and not self._stop:
             self._set_phase(LearningPhase.ASKING_COACH)
-            self._emit_log(f"  [教练] 分析 {len(coach_batch_frames)} 个不确定帧...")
+
+            # 去重：跳过与已包含帧余弦相似度 >0.95 的重复帧，减少 LLM API 调用
+            coach_batch_frames, coach_batch_embeddings = self._deduplicate_frames(
+                coach_batch_frames, coach_batch_embeddings
+            )
+
+            self._emit_log(f"  [教练] 分析 {len(coach_batch_frames)} 个不确定帧（已去重）...")
 
             # 分批让 LLM 分析
             batch_size = 8
@@ -743,9 +772,7 @@ class UnifiedPipeline(LoggingMixin):
             dataset=new_dataset,
             output_dir=new_model_dir,
             epochs=epochs,
-            progress_callback=lambda ep, total, loss, tacc, vacc: self._progress(
-                0.7 + 0.25 * ep / max(total, 1), f"训练 {ep}/{total}"
-            ),
+            progress_callback=self._make_train_callback(0.7, 0.25),
             on_log=self._on_log,
         )
 
@@ -759,6 +786,49 @@ class UnifiedPipeline(LoggingMixin):
             "uncertain_count": len(uncertain_frames),
             "human_review": human_review,
         }
+
+    @staticmethod
+    def _deduplicate_frames(
+        frames: list,
+        embeddings: list,
+        similarity_threshold: float = 0.95,
+    ) -> tuple[list, list]:
+        """去除与已包含帧高度相似的重复帧，减少 LLM API 调用。
+
+        对 embeddings 计算余弦相似度，跳过与已选帧相似度 > similarity_threshold 的帧。
+
+        Returns:
+            (deduplicated_frames, deduplicated_embeddings)
+        """
+        if not frames:
+            return frames, embeddings
+
+        selected_frames = []
+        selected_embeddings = []
+        selected_norms = []  # 预计算各已选向量的 L2 范数，避免重复计算
+
+        for frame, emb in zip(frames, embeddings):
+            emb_arr = np.array(emb, dtype=np.float32)
+            emb_norm = np.linalg.norm(emb_arr)
+
+            # 与所有已选帧比较余弦相似度
+            is_duplicate = False
+            if selected_embeddings:
+                for sel_arr, sel_norm in zip(selected_embeddings, selected_norms):
+                    denom = emb_norm * sel_norm
+                    if denom < 1e-8:
+                        continue
+                    sim = float(np.dot(emb_arr, sel_arr) / denom)
+                    if sim > similarity_threshold:
+                        is_duplicate = True
+                        break
+
+            if not is_duplicate:
+                selected_frames.append(frame)
+                selected_embeddings.append(emb_arr)
+                selected_norms.append(emb_norm if emb_norm > 1e-8 else 1.0)
+
+        return selected_frames, selected_embeddings
 
     def _classify_batch(
         self, encoder, model, frames, actions,

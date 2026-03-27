@@ -62,6 +62,8 @@ class LearningPipeline(LoggingMixin):
         output_dir: str = "runs/workshop",
         on_log=None,
         on_progress=None,
+        on_train_step=None,
+        provider=None,
     ):
         self._llm_provider_name = llm_provider_name
         self._llm_api_key = llm_api_key
@@ -70,8 +72,9 @@ class LearningPipeline(LoggingMixin):
         self._output_dir = Path(output_dir)
         self._on_log = on_log
         self._on_progress = on_progress
+        self._on_train_step = on_train_step
         self._stop = False
-        self._provider = None
+        self._provider = provider  # 可复用外部已创建的 provider
 
     def stop(self):
         self._stop = True
@@ -175,16 +178,11 @@ class LearningPipeline(LoggingMixin):
 
             self._emit_log(f"  训练完成: val_acc={metrics.get('best_val_acc', 0):.3f}")
 
-            # ── Phase 3: RL（可选） ──
-            if rl_steps > 0 and not self._stop:
+            # ── Phase 3: RL（由 SelfPlayLoop 在真实设备上执行） ──
+            if rl_steps > 0:
                 self._emit_log("=" * 50)
-                self._emit_log(f"Phase 3/3: RL 微调 ({rl_steps} 步)")
-                self._progress("rl", 0.75)
-
-                video_files = [str(Path(d) / "recording.mp4") for d in valid_dirs]
-                rl_result = self._run_e2e_rl(video_files, actions, model_dir, rl_steps)
-                result.rl_dir = model_dir
-                result.phases["rl"] = rl_result
+                self._emit_log("Phase 3/3: RL 需要真实设备交互，将在学习完成后由 Agent 部署执行")
+                result.phases["rl"] = {"status": "deferred", "rl_steps": rl_steps}
             else:
                 self._emit_log("Phase 3/3: 跳过 RL")
 
@@ -295,7 +293,7 @@ class LearningPipeline(LoggingMixin):
                         fid = s.get("frame_id", 0)
                         key = s.get("human_action", {}).get("key", "")
                         if key:
-                            # 映射到动作名
+                            # 映射到动作名 (action_map 是 key→action 方向)
                             mapped = action_map.get(key, key)
                             if mapped in actions:
                                 frame_actions[fid] = mapped
@@ -332,10 +330,14 @@ class LearningPipeline(LoggingMixin):
                 batch_frames.append(frame)
                 batch_labels.append(label)
 
-                if len(batch_frames) >= 16:
+                if len(batch_frames) >= 32:
                     embeddings = encoder.encode_batch(batch_frames)
                     for emb, lbl in zip(embeddings, batch_labels):
                         dataset.add_sample(emb, lbl)
+                        # 嵌入空间数据增强：50% 概率添加高斯噪声扰动副本，增加样本多样性
+                        if np.random.random() < 0.5:
+                            augmented = emb + np.random.normal(0, 0.02, emb.shape)
+                            dataset.add_sample(augmented, lbl)
                     total_samples += len(batch_frames)
                     batch_frames.clear()
                     batch_labels.clear()
@@ -349,6 +351,10 @@ class LearningPipeline(LoggingMixin):
                 embeddings = encoder.encode_batch(batch_frames)
                 for emb, lbl in zip(embeddings, batch_labels):
                     dataset.add_sample(emb, lbl)
+                    # 嵌入空间数据增强：50% 概率添加高斯噪声扰动副本，增加样本多样性
+                    if np.random.random() < 0.5:
+                        augmented = emb + np.random.normal(0, 0.02, emb.shape)
+                        dataset.add_sample(augmented, lbl)
                 total_samples += len(batch_frames)
 
             cap.release()
@@ -363,138 +369,25 @@ class LearningPipeline(LoggingMixin):
         dataset.save(dataset_path)
 
         self._progress("train", 0.65)
+        def _train_cb(ep, total, loss, tacc, vacc):
+            self._progress("train", 0.65 + 0.2 * ep / max(total, 1))
+            if self._on_train_step:
+                try:
+                    self._on_train_step(loss, tacc, vacc)
+                except Exception:
+                    pass
+
         trainer = E2ETrainer(
             dataset=dataset,
             output_dir=model_dir,
             epochs=epochs,
-            progress_callback=lambda ep, total, loss, tacc, vacc: self._progress(
-                "train", 0.65 + 0.2 * ep / max(total, 1)
-            ),
+            progress_callback=_train_cb,
             on_log=self._on_log,
         )
 
         metrics = trainer.train()
         metrics["total_samples"] = total_samples
         return metrics
-
-    def _run_e2e_rl(self, video_files, actions, model_dir, rl_steps) -> dict:
-        """端到端 RL 微调。"""
-        import cv2
-        import torch
-        import torch.nn.functional as F
-        from ..core.vision_encoder import VisionEncoder
-        from ..data.e2e_trainer import E2EMLP
-
-        encoder = VisionEncoder()
-        meta_path = Path(model_dir) / "model.meta.json"
-        model_path = Path(model_dir) / "model.pt"
-        if not model_path.exists():
-            return {"error": "no_model"}
-
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-
-        model = E2EMLP(
-            input_dim=meta.get("embed_dim", 576),
-            num_actions=meta.get("num_actions", len(actions)),
-            hidden_dims=meta.get("hidden_dims", [256, 128]),
-        )
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
-        model.train()
-
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-
-        step = 0
-        total_reward = 0.0
-        action_counts = {a: 0 for a in actions}
-        log_probs_buffer = []
-        rewards_buffer = []
-        prev_action = -1
-
-        for vpath in video_files:
-            if self._stop or step >= rl_steps:
-                break
-
-            cap = cv2.VideoCapture(vpath)
-            if not cap.isOpened():
-                continue
-
-            frame_counter = 0
-            while step < rl_steps and not self._stop:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                frame_counter += 1
-                if frame_counter % 5 != 0:
-                    continue
-
-                embedding = encoder.encode(frame)
-                tensor = torch.tensor(embedding, dtype=torch.float32).unsqueeze(0)
-                logits = model(tensor)
-                probs = F.softmax(logits, dim=-1)
-
-                dist = torch.distributions.Categorical(probs)
-                action_idx = dist.sample()
-                log_prob = dist.log_prob(action_idx)
-
-                reward = 0.0
-                a_idx = action_idx.item()
-                if a_idx != prev_action:
-                    reward += 0.1
-                if a_idx < len(actions) and actions[a_idx] != "idle":
-                    reward += 0.05
-                if a_idx < len(actions):
-                    action_counts[actions[a_idx]] = action_counts.get(actions[a_idx], 0) + 1
-
-                log_probs_buffer.append(log_prob)
-                rewards_buffer.append(reward)
-                total_reward += reward
-                prev_action = a_idx
-                step += 1
-
-                if len(log_probs_buffer) >= 32:
-                    self._policy_update(optimizer, log_probs_buffer, rewards_buffer)
-                    log_probs_buffer.clear()
-                    rewards_buffer.clear()
-
-                if step % 200 == 0:
-                    self._progress("rl", 0.85 + 0.1 * step / rl_steps)
-                    self._emit_log(f"  [RL] step={step}, avg_reward={total_reward/step:.3f}")
-
-            cap.release()
-
-        if log_probs_buffer:
-            self._policy_update(optimizer, log_probs_buffer, rewards_buffer)
-
-        torch.save(model.state_dict(), model_path)
-        return {
-            "total_steps": step,
-            "avg_reward": round(total_reward / max(step, 1), 4),
-            "action_dist": {k: v for k, v in action_counts.items() if v > 0},
-        }
-
-    @staticmethod
-    def _policy_update(optimizer, log_probs, rewards):
-        """REINFORCE 策略梯度更新。"""
-        import torch
-        returns = []
-        R = 0
-        gamma = 0.99
-        for r in reversed(rewards):
-            R = r + gamma * R
-            returns.insert(0, R)
-        returns = torch.tensor(returns, dtype=torch.float32)
-        if returns.std() > 1e-6:
-            returns = (returns - returns.mean()) / (returns.std() + 1e-8)
-
-        loss = 0
-        for lp, G in zip(log_probs, returns):
-            loss -= lp * G
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
 
     def _export_profile(self, run_dir, description, actions,
                         action_descriptions, model_dir,
@@ -507,6 +400,7 @@ class LearningPipeline(LoggingMixin):
             name = name.replace(ch, "_")
 
         # 使用真实按键映射
+        # Invert action_map (key→action) to (action→key) for profile
         action_key_map = {}
         if action_map:
             for key, action_name in action_map.items():
@@ -652,7 +546,7 @@ class LearningPipeline(LoggingMixin):
                 frame_idx += 1
                 batch_frames.append(frame)
 
-                if len(batch_frames) >= 16:
+                if len(batch_frames) >= 32:
                     self._process_pseudo_batch(
                         encoder, model, batch_frames, actions,
                         confidence_threshold, pseudo_samples,

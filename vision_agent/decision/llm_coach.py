@@ -67,7 +67,7 @@ class LLMCoach:
 
         Returns:
             {"actions": ["attack", "skill_1", ...],
-             "action_map": {"q": "attack", "w": "skill_1", ...},
+             "action_map": {"q": "attack", "w": "skill_1", ...},  # key→action mapping
              "action_descriptions": {"attack": "普通攻击", ...},
              "scene_type": "MOBA游戏"}
         """

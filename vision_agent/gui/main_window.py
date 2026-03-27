@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
     _learn_log = Signal(str)
     _learn_progress = Signal(str, float)
     _learn_done = Signal(dict)
+    _learn_chart_point = Signal(float, float, float)  # loss, train_acc, val_acc
     _recording_done = Signal(str, dict)  # rec_dir, stats
     _selfplay_log = Signal(str)
     _selfplay_frame = Signal(object)
@@ -153,6 +154,9 @@ class MainWindow(QMainWindow):
         self._learn_log.connect(self._on_learn_log)
         self._learn_progress.connect(self._on_learn_progress)
         self._learn_done.connect(self._on_learn_done)
+        self._learn_chart_point.connect(
+            lambda loss, tacc, vacc: wp.train_chart.add_point(loss, tacc, vacc)
+        )
 
         # LLM 面板
         lp.llm_provider_combo.addItems(list(PROVIDER_PRESETS.keys()))
@@ -260,13 +264,27 @@ class MainWindow(QMainWindow):
                     f"  - {s}" for s in coach["suggestions"][:3]
                 )
 
-            QMessageBox.information(
+            # 检查是否有 RL 就绪配置
+            rl_ready = coach.get("rl_ready")
+            rl_hint = ""
+            if rl_ready:
+                rl_hint = "\n\nRL 自对弈已就绪，是否切换到 Agent 部署启动？"
+
+            reply = QMessageBox.information(
                 self, "学习完成",
                 f"模型: {result['model_dir']}\n"
                 f"Profile: {result.get('profile_path', 'N/A')}"
-                f"{advice_text}\n\n"
-                f"使用 eval_model.py 评估模型效果。"
+                f"{advice_text}"
+                f"{rl_hint}\n\n"
+                f"使用 eval_model.py 评估模型效果。",
+                QMessageBox.Ok | (QMessageBox.Yes if rl_ready else QMessageBox.Ok),
             )
+
+            # 如果用户确认且有 RL 配置，自动切换到 Agent 部署并填入模型
+            if rl_ready and reply == QMessageBox.Yes:
+                sp = self.selfplay_panel
+                sp.set_model_dir(result["model_dir"])
+                self._switch_mode("selfplay")
         else:
             wp.progress_bar.setFormat("失败或中止")
             if scene:
@@ -415,6 +433,7 @@ class MainWindow(QMainWindow):
             on_log=lambda msg: self._learn_log.emit(msg),
             on_progress=lambda phase, pct, detail="": self._learn_progress.emit(phase, pct),
             on_phase_change=lambda phase: self._learn_log.emit(f"[阶段] → {phase}"),
+            on_train_step=lambda loss, tacc, vacc: self._learn_chart_point.emit(loss, tacc, vacc),
         )
 
         kwargs = {
