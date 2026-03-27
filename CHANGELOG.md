@@ -4,6 +4,20 @@
 
 ---
 
+## [v0.2.0] - 2026-03-27
+
+新增远程 PC 录制功能，支持局域网内跨 PC 采集游戏画面和操作。
+
+### 新功能
+
+- **远程 PC 录制**：WebSocket 实时推送画面 + 键鼠事件，本机接收并保存为标准训练格式
+- **采集服务端** (`remote_capture_server.py`)：远程 PC 轻量运行，仅需 mss + pynput + websockets + opencv
+- **远程录制器** (`remote_recorder.py`)：本机接收端，输出与本地录制完全一致的 recording.mp4 + actions.jsonl
+- **GUI 远程录制源**：录制源新增"远程 PC"选项，支持地址配置和连接测试
+- **CLI serve/remote 命令**：`python main.py serve` 启动采集服务，`python main.py remote <IP>` 连接录制
+
+---
+
 ## [v0.1.1] - 2026-03-27
 
 训练流程审计修复，确保全管线数据增强一致性。
