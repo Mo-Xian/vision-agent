@@ -137,8 +137,22 @@ python main.py eval runs/workshop/exp1/model --mode stats
 ### EXE 打包
 
 ```bash
-build.bat
+# 本地打包
+build.bat                  # Windows 一键打包
+python build_exe.py        # 跨平台打包脚本
+python build_exe.py --debug  # 带控制台的调试版
+
 # 产出在 dist/VisionAgent/
+```
+
+### 自动发布
+
+推送版本 tag 后 GitHub Actions 自动打包并发布到 Releases：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+# → GitHub Actions 自动打包 → Releases 页面下载 VisionAgent-v1.0.0-windows.zip
 ```
 
 ---
