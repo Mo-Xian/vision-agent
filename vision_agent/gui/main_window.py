@@ -1,5 +1,6 @@
 """主窗口：训练工坊（行为克隆）+ 自对弈（RL）+ LLM 配置。"""
 
+import logging
 import os
 import json
 import threading
@@ -17,6 +18,8 @@ from .workshop_panel import WorkshopPanel
 from .selfplay_panel import SelfPlayPanel
 from .llm_panel import LLMPanel
 from .styles import MAIN_STYLESHEET, COLORS
+
+logger = logging.getLogger(__name__)
 
 # 模式切换按钮样式
 _MODE_BTN_STYLE = f"""
@@ -52,7 +55,6 @@ class MainWindow(QMainWindow):
     _learn_done = Signal(dict)
     _recording_done = Signal(str, dict)  # rec_dir, stats
     _selfplay_log = Signal(str)
-    _selfplay_stats = Signal(dict)
     _selfplay_frame = Signal(object)
 
     def __init__(self):
@@ -81,7 +83,6 @@ class MainWindow(QMainWindow):
         self._current_mode = "workshop"
         self._learner = None
         self._recorder = None
-        self._selfplay_loop = None
         self._selfplay_capture_timer = None
         self._dqn_engine = None
         self._agent_running = False
@@ -454,98 +455,6 @@ class MainWindow(QMainWindow):
             )
         QMessageBox.information(self, "模型列表", "\n".join(lines))
 
-    # ================================================================
-    #  自对弈训练（在训练工坊中）
-    # ================================================================
-
-    @Slot()
-    def _start_selfplay(self):
-        if self._selfplay_loop:
-            return
-
-        wp = self.workshop_panel
-        sp_config = wp.get_selfplay_config()
-        # 设备信息从 Agent 部署面板获取
-        device_serial = self.selfplay_panel.get_device_serial()
-
-        if not device_serial:
-            QMessageBox.warning(
-                self, "提示",
-                "请先在「Agent 部署」面板中连接手机设备。"
-            )
-            return
-
-        def _run():
-            try:
-                from ..rl.preset import load_selfplay_preset
-                from ..rl.self_play import SelfPlayLoop
-
-                preset = load_selfplay_preset(sp_config["preset"])
-                dqn = preset.get("dqn_params", {})
-
-                def _on_stats(s):
-                    self._selfplay_stats.emit(s)
-
-                self._selfplay_loop = SelfPlayLoop(
-                    action_zones=preset["action_zones"],
-                    bc_model_dir=sp_config.get("bc_model_dir", "") or preset.get("bc_model_dir", ""),
-                    output_dir=preset.get("output_dir", "runs/selfplay/exp1"),
-                    device_serial=device_serial,
-                    reward_config=preset.get("reward_config"),
-                    start_model_path=preset.get("start_model_path", ""),
-                    lr=dqn.get("lr", 0.0005),
-                    gamma=dqn.get("gamma", 0.99),
-                    epsilon_start=dqn.get("epsilon_start", 1.0),
-                    epsilon_end=dqn.get("epsilon_end", 0.05),
-                    epsilon_decay=dqn.get("epsilon_decay", 0.998),
-                    buffer_capacity=dqn.get("buffer_capacity", 50000),
-                    batch_size=dqn.get("batch_size", 64),
-                    fps=sp_config.get("fps", 5),
-                    max_episodes=sp_config.get("max_episodes", 0),
-                    on_log=lambda msg: self._selfplay_log.emit(msg),
-                    on_stats=_on_stats,
-                )
-
-                self._start_frame_capture()
-                self._selfplay_loop.start()
-
-                while self._selfplay_loop and self._selfplay_loop.is_running:
-                    import time
-                    time.sleep(0.5)
-
-            except Exception as e:
-                self._selfplay_log.emit(f"[错误] {e}")
-            finally:
-                self._selfplay_loop = None
-                self._stop_frame_capture()
-                pass  # selfplay 结束
-
-        threading.Thread(target=_run, daemon=True).start()
-        self._log("[自对弈] 启动训练...")
-
-    @Slot()
-    def _stop_selfplay(self):
-        if self._selfplay_loop:
-            self._selfplay_log.emit("[自对弈] 正在停止...")
-            loop = self._selfplay_loop
-            threading.Thread(target=loop.stop, daemon=True).start()
-
-    def _start_frame_capture(self):
-        """启动帧捕获定时器，定期从 scrcpy 窗口截图并发送到面板。"""
-        def _capture():
-            if not self._selfplay_loop or not self._selfplay_loop.is_running:
-                return
-            try:
-                frame = self._selfplay_loop._env._capture_frame()
-                if frame is not None:
-                    self._selfplay_frame.emit(frame)
-            except Exception:
-                pass
-
-        self._selfplay_capture_timer = QTimer()
-        self._selfplay_capture_timer.timeout.connect(_capture)
-        self._selfplay_capture_timer.start(200)
-
     def _stop_frame_capture(self):
         if self._selfplay_capture_timer:
             QTimer.singleShot(0, self._selfplay_capture_timer.stop)
@@ -683,6 +592,16 @@ class MainWindow(QMainWindow):
                     self._selfplay_log.emit(
                         f"[Agent] {action.name} (conf={action.confidence:.2f}) {action.reason}"
                     )
+                    # 执行键盘操作
+                    key = action.parameters.get("key", "") if action.parameters else ""
+                    if key:
+                        try:
+                            import pynput.keyboard as kb
+                            controller = kb.Controller()
+                            controller.press(key)
+                            controller.release(key)
+                        except Exception as e:
+                            logger.debug(f"按键执行失败: {e}")
             time.sleep(0.2)
 
     @Slot()
@@ -848,8 +767,6 @@ class MainWindow(QMainWindow):
             self._recorder.stop()
         if self._learner:
             self._learner.stop()
-        if self._selfplay_loop:
-            self._selfplay_loop.stop()
         self._agent_running = False
         if self._dqn_engine:
             self._dqn_engine.on_stop()

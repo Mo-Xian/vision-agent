@@ -100,9 +100,10 @@ def eval_video(model_dir: str, video_path: str, output_dir: str,
             continue
 
         # 推理
-        action = engine.decide(None, None, frame=frame)
-        last_action = action.tool_name
-        last_conf = action.confidence
+        actions = engine.decide(embedding=frame)
+        action = actions[0] if actions else None
+        last_action = action.name if action else "unknown"
+        last_conf = action.confidence if action else 0.0
         infer_count += 1
 
         # 绘制标注
@@ -283,8 +284,11 @@ def eval_stats(model_dir: str, video_path: str, output_dir: str,
         if frame_idx % sample_interval != 0:
             continue
 
-        action = engine.decide(None, None, frame=frame)
-        name = action.tool_name
+        actions = engine.decide(embedding=frame)
+        action = actions[0] if actions else None
+        if action is None:
+            continue
+        name = action.name
         conf = action.confidence
         ts = frame_idx / fps
 

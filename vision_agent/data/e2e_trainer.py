@@ -178,8 +178,8 @@ class E2ETrainer:
             if self._progress_callback:
                 try:
                     self._progress_callback(epoch, self._epochs, train_loss, train_acc, val_acc)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"progress_callback 异常: {e}")
 
         self._log(f"[E2E] 训练完成: best_val_acc={best_val_acc:.3f} @ epoch {best_epoch}")
 

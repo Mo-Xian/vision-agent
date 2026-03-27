@@ -169,8 +169,9 @@ class UnifiedPipeline(LoggingMixin):
 
         try:
             provider = self._create_provider()
-        except Exception:
+        except Exception as e:
             provider = None
+            self._emit_log(f"[警告] LLM 连接失败: {e}（将跳过 LLM 辅助功能）")
 
         model_dir = ""
         actions = []
@@ -223,6 +224,7 @@ class UnifiedPipeline(LoggingMixin):
                 description=description,
                 epochs=epochs,
                 knowledge=knowledge,
+                rl_steps=selfplay_episodes if device_serial else 0,
             )
 
             result.phase_history.append({
@@ -812,7 +814,8 @@ class UnifiedPipeline(LoggingMixin):
             }})
 
         try:
-            resp = coach._provider.chat(
+            # 使用 pipeline 持有的 provider，避免访问 coach 私有属性
+            resp = self._provider.chat(
                 messages=[{"role": "user", "content": content}],
                 system="你是游戏 AI 教练，为游戏截图标注最合适的动作。只返回 JSON 数组。",
                 max_tokens=1024,

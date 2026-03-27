@@ -156,20 +156,25 @@ class DQNAgent:
 
         # E2EMLP 的 net 包含 [Linear, ReLU, Dropout, Linear, ReLU, Dropout, Linear]
         # DQNNetwork 的 net 包含 [Linear, ReLU, Linear, ReLU, Linear]
-        # 需要映射对应的 Linear 层权重
-        bc_linears = {k: v for k, v in bc_state.items()
-                      if "weight" in k or "bias" in k}
-        dqn_linears = {k: v for k, v in dqn_state.items()
-                       if "weight" in k or "bias" in k}
+        # 只提取 Linear 层的 weight/bias（按层序号分组），跳过 Dropout/ReLU
+        def extract_linear_params(state_dict):
+            """从 state_dict 中按顺序提取 Linear 层参数。
 
-        # 按序提取 Linear 层参数
-        bc_params = []
-        for k in sorted(bc_linears.keys()):
-            bc_params.append((k, bc_linears[k]))
+            Linear 层有 weight 和 bias，ReLU/Dropout 无参数。
+            按层索引排序，返回 [(key, tensor), ...] 列表。
+            """
+            params = [(k, v) for k, v in state_dict.items()
+                      if k.endswith(".weight") or k.endswith(".bias")]
+            # 按层索引数值排序（如 net.0, net.3, net.6）
+            def layer_index(key):
+                # 提取 "net.X.weight" 中的 X
+                parts = key.split(".")
+                return int(parts[1])
+            params.sort(key=lambda kv: (layer_index(kv[0]), kv[0]))
+            return params
 
-        dqn_params = []
-        for k in sorted(dqn_linears.keys()):
-            dqn_params.append((k, dqn_linears[k]))
+        bc_params = extract_linear_params(bc_state)
+        dqn_params = extract_linear_params(dqn_state)
 
         loaded = 0
         for (bc_k, bc_v), (dqn_k, dqn_v) in zip(bc_params, dqn_params):

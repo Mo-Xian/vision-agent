@@ -123,9 +123,11 @@ class SelfPlayLoop:
         with self._lock:
             recent_rewards = self._episode_rewards[-10:] if self._episode_rewards else []
             recent_losses = self._losses[-100:] if self._losses else []
+            episode_count = self._episode_count
+            total_steps = self._total_steps
         return {
-            "episodes": self._episode_count,
-            "total_steps": self._total_steps,
+            "episodes": episode_count,
+            "total_steps": total_steps,
             "epsilon": round(self._agent.epsilon, 4),
             "buffer_size": self._agent.buffer_size,
             "train_steps": self._agent.train_steps,
@@ -217,7 +219,8 @@ class SelfPlayLoop:
             if state is None:
                 break
 
-            self._episode_count += 1
+            with self._lock:
+                self._episode_count += 1
             episode_reward = 0.0
             episode_steps = 0
 
@@ -241,7 +244,8 @@ class SelfPlayLoop:
                 state = next_state
                 episode_reward += reward
                 episode_steps += 1
-                self._total_steps += 1
+                with self._lock:
+                    self._total_steps += 1
 
                 # 日志
                 if episode_steps % 50 == 0:
