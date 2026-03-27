@@ -763,6 +763,10 @@ class MainWindow(QMainWindow):
         s.setValue("decision/provider", lp.llm_provider_combo.currentText())
         s.setValue("decision/model", lp.llm_model_combo.currentText())
         s.setValue("decision/base_url", lp.llm_base_url.text())
+        # 保存 API Key（本地存储，不上传）
+        api_key = lp.llm_api_key.text().strip()
+        if api_key:
+            s.setValue("decision/api_key", api_key)
         s.sync()
         lp.save_hint.setText("已保存")
         self._log("[LLM] 配置已保存")
@@ -771,9 +775,15 @@ class MainWindow(QMainWindow):
 
     def _get_llm_api_key(self) -> str:
         lp = self.llm_panel
+        # 优先用界面输入的 key
         key = lp.llm_api_key.text().strip()
         if key:
             return key
+        # 其次用已保存的 key
+        saved = self._settings.value("decision/api_key", "")
+        if saved:
+            return saved
+        # 最后用环境变量
         provider_name = lp.llm_provider_combo.currentText()
         env_key = PROVIDER_PRESETS.get(provider_name, {}).get("api_key_env", "")
         return os.environ.get(env_key, "") if env_key else ""
@@ -799,6 +809,9 @@ class MainWindow(QMainWindow):
         s.setValue("decision/provider", lp.llm_provider_combo.currentText())
         s.setValue("decision/model", lp.llm_model_combo.currentText())
         s.setValue("decision/base_url", lp.llm_base_url.text())
+        api_key = lp.llm_api_key.text().strip()
+        if api_key:
+            s.setValue("decision/api_key", api_key)
         s.setValue("train/epochs", wp.epochs_spin.value())
 
     def _load_settings(self):
@@ -807,12 +820,24 @@ class MainWindow(QMainWindow):
         wp = self.workshop_panel
         if s.value("app/mode"):
             self._switch_mode(s.value("app/mode"))
-        if s.value("decision/provider"):
-            lp.llm_provider_combo.setCurrentText(s.value("decision/provider"))
-        if s.value("decision/model"):
-            lp.llm_model_combo.setCurrentText(s.value("decision/model"))
-        if s.value("decision/base_url"):
-            lp.llm_base_url.setText(s.value("decision/base_url"))
+
+        # LLM 配置：先设 provider（会触发 _on_provider_changed 重置 model/base_url），
+        # 再用保存值覆盖 model 和 base_url
+        saved_provider = s.value("decision/provider", "")
+        saved_model = s.value("decision/model", "")
+        saved_base_url = s.value("decision/base_url", "")
+        saved_api_key = s.value("decision/api_key", "")
+
+        if saved_provider:
+            lp.llm_provider_combo.setCurrentText(saved_provider)
+            # setCurrentText 触发了 _on_provider_changed，它会重置 model 和 base_url
+        if saved_model:
+            lp.llm_model_combo.setCurrentText(saved_model)
+        if saved_base_url:
+            lp.llm_base_url.setText(saved_base_url)
+        if saved_api_key:
+            lp.llm_api_key.setText(saved_api_key)
+
         if s.value("train/epochs") is not None:
             try: wp.epochs_spin.setValue(int(s.value("train/epochs", 100)))
             except (TypeError, ValueError): pass
