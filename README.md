@@ -167,6 +167,66 @@ git push origin v1.0.0
 
 ---
 
+## 远程 PC 支持
+
+支持跨局域网录制和 Agent 控制，采用**服务端-客户端架构**：
+
+```
+远程 PC (客户端)                          Vision Agent 主机 (服务端)
+┌───────────────────────────┐            ┌─────────────────────────────┐
+│  RemoteCaptureClient.exe  │            │  RemoteHub 中转服务          │
+│                           │  ──ws──>   │                             │
+│  · 截屏 (全屏/指定窗口)    │  画面帧     │  接收画面 ──> 录制训练数据    │
+│  · 键鼠事件监听            │  键鼠事件   │  接收事件 ──> 动作标注       │
+│                           │            │                             │
+│  · 执行 Agent 控制指令     │  <──ws──   │  Agent 决策 ──> 转发控制指令  │
+│    (按键/鼠标点击/移动)     │  控制指令   │                             │
+│                           │            │                             │
+│  · 断线自动重连            │            │  GUI 一键启动/停止           │
+└───────────────────────────┘            └─────────────────────────────┘
+    无需 Python 环境                          所有训练和决策在此完成
+```
+
+### 使用流程
+
+**1. 服务端（Vision Agent 主机）**
+
+```bash
+# GUI 模式：训练工坊或 Agent 部署 → 选择"远程 PC" → 启动中转服务
+# CLI 模式：
+python main.py hub                    # 启动中转服务，等待客户端连接并录制
+python main.py hub --port 9876        # 指定端口
+```
+
+**2. 客户端（远程游戏 PC）**
+
+```bash
+# 从 GitHub Releases 下载 RemoteCaptureClient.exe，双击或命令行运行：
+RemoteCaptureClient.exe ws://服务端IP:9876
+RemoteCaptureClient.exe ws://192.168.1.100:9876 --window "王者荣耀" --fps 15
+
+# 也可用 Python 直接运行：
+python vision_agent/data/remote_capture_client.py ws://服务端IP:9876
+```
+
+### 客户端功能
+
+| 功能 | 说明 |
+|------|------|
+| 画面推送 | mss 截屏 → JPEG 编码 → WebSocket 实时推送 |
+| 事件推送 | pynput 监听键盘/鼠标事件 → JSON 推送 |
+| 控制执行 | 接收 Agent 指令：`key_tap`、`key_press`、`key_release`、`mouse_click`、`mouse_move` |
+| 窗口捕获 | `--window "标题"` 模糊匹配指定窗口，不指定则全屏 |
+| 自动重连 | 网络断开后 5 秒自动重连，远程 PC 无感恢复 |
+| 独立部署 | 单文件 EXE（~57MB），无需 Python 环境 |
+
+### 支持场景
+
+- **远程录制训练**：在远程 PC 玩游戏，画面和操作实时传回服务端生成训练数据
+- **Agent 远程操控**：服务端 Agent 获取远程画面 → 模型决策 → 控制指令发回远程 PC 执行
+
+---
+
 ## 界面说明
 
 界面分为 3 个模式，通过顶部按钮切换：
@@ -227,6 +287,9 @@ vision-agent/
 │   ├── data/                               # 数据采集与训练
 │   │   ├── game_recorder.py                # PC 录制 (窗口捕获+键鼠)
 │   │   ├── mobile_recorder.py              # 手机录制 (scrcpy+ADB)
+│   │   ├── remote_hub.py                   # 远程中转服务 (服务端)
+│   │   ├── remote_capture_client.py        # 远程采集客户端 (独立 EXE)
+│   │   ├── remote_recorder.py              # 远程录制器 (通过 hub 录制)
 │   │   ├── e2e_dataset.py                  # E2E 数据集
 │   │   └── e2e_trainer.py                  # E2EMLP 训练器
 │   ├── decision/                           # 决策引擎
@@ -273,6 +336,7 @@ vision-agent/
 | GUI | PySide6 (Qt) |
 | 屏幕捕获 | mss |
 | 输入模拟 | pynput (PC) / ADB (手机) |
+| 远程通信 | WebSocket (websockets 库，双向帧/事件/控制) |
 | 手机投屏 | scrcpy |
 | 视频下载 | yt-dlp (可选，自主学习自动下载) |
 | 打包分发 | PyInstaller |
