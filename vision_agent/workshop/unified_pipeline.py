@@ -851,6 +851,10 @@ class UnifiedPipeline(LoggingMixin):
                 action_name = zone_names[act_idx]
                 if action_name in dataset.action_map:
                     dataset.add_sample(emb, action_name)
+                    # 嵌入空间数据增强：50% 概率添加高斯噪声扰动副本
+                    if np.random.random() < 0.5:
+                        augmented = emb + np.random.normal(0, 0.02, emb.shape)
+                        dataset.add_sample(augmented, action_name)
                     injected += 1
 
         self._emit_log(
@@ -1087,9 +1091,13 @@ class UnifiedPipeline(LoggingMixin):
                 new_dataset.add_sample(emb, action_name)
             self._emit_log(f"  原始数据: {len(orig)} 样本")
 
-        # 添加新样本
+        # 添加新样本（含数据增强）
         for emb, action_name, conf in all_samples:
             new_dataset.add_sample(emb, action_name)
+            # 嵌入空间数据增强：50% 概率添加高斯噪声扰动副本
+            if np.random.random() < 0.5:
+                augmented = emb + np.random.normal(0, 0.02, emb.shape)
+                new_dataset.add_sample(augmented, action_name)
 
         self._emit_log(
             f"  合并数据: {len(new_dataset)} 样本 "

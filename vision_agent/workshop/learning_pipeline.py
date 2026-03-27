@@ -75,6 +75,7 @@ class LearningPipeline(LoggingMixin):
         self._on_train_step = on_train_step
         self._stop = False
         self._provider = provider  # 可复用外部已创建的 provider
+        self._encoder = None
 
     def stop(self):
         self._stop = True
@@ -85,6 +86,12 @@ class LearningPipeline(LoggingMixin):
                 self._on_progress(phase, pct)
             except Exception:
                 pass
+
+    def _get_encoder(self):
+        if self._encoder is None:
+            from ..core.vision_encoder import VisionEncoder
+            self._encoder = VisionEncoder()
+        return self._encoder
 
     def _create_provider(self):
         if self._provider is None:
@@ -266,11 +273,10 @@ class LearningPipeline(LoggingMixin):
     ) -> dict:
         """从录制数据训练 E2E 模型。"""
         import cv2
-        from ..core.vision_encoder import VisionEncoder
         from ..data.e2e_dataset import E2EDataset
         from ..data.e2e_trainer import E2ETrainer
 
-        encoder = VisionEncoder()
+        encoder = self._get_encoder()
         dataset = E2EDataset()
         dataset.set_actions(actions)
 
@@ -481,7 +487,6 @@ class LearningPipeline(LoggingMixin):
             return result
 
         # 加载模型和元数据（兼容 BC 和 DQN 两种模型）
-        from ..core.vision_encoder import VisionEncoder
         from ..data.e2e_dataset import E2EDataset
 
         with open(meta_path, "r", encoding="utf-8") as f:
@@ -505,7 +510,7 @@ class LearningPipeline(LoggingMixin):
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
         model.eval()
 
-        encoder = VisionEncoder()
+        encoder = self._get_encoder()
 
         self._emit_log("=" * 50)
         self._emit_log(f"伪标签扩展: {len(video_paths)} 个视频")
