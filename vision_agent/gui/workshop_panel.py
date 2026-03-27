@@ -132,13 +132,13 @@ class WorkshopPanel(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
 
         # ━━━ 场景管理 ━━━
         scene_group = QGroupBox("场景管理")
         sg_layout = QVBoxLayout(scene_group)
-        sg_layout.setSpacing(6)
+        sg_layout.setSpacing(4)
 
         scene_row = QHBoxLayout()
         self.scene_combo = QComboBox()
@@ -177,7 +177,7 @@ class WorkshopPanel(QWidget):
         # ━━━ 录制操作 ━━━
         source_group = QGroupBox("录制操作")
         src_layout = QVBoxLayout(source_group)
-        src_layout.setSpacing(6)
+        src_layout.setSpacing(4)
 
         rec_layout = src_layout
 
@@ -255,14 +255,12 @@ class WorkshopPanel(QWidget):
         self.record_start_btn = QPushButton("开始录制")
         self.record_start_btn.setObjectName("startBtn")
         self.record_start_btn.setCursor(Qt.PointingHandCursor)
-        self.record_start_btn.setMinimumHeight(36)
         self.record_start_btn.clicked.connect(self.recording_started)
         rec_btn_row.addWidget(self.record_start_btn)
 
         self.record_stop_btn = QPushButton("停止录制")
         self.record_stop_btn.setObjectName("stopBtn")
         self.record_stop_btn.setCursor(Qt.PointingHandCursor)
-        self.record_stop_btn.setMinimumHeight(36)
         self.record_stop_btn.setEnabled(False)
         self.record_stop_btn.clicked.connect(self.recording_stopped)
         rec_btn_row.addWidget(self.record_stop_btn)
@@ -274,7 +272,7 @@ class WorkshopPanel(QWidget):
 
         # 录制列表
         self.recording_list = QListWidget()
-        self.recording_list.setMaximumHeight(100)
+        self.recording_list.setMaximumHeight(72)
         self.recording_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.recording_list.setStyleSheet(
             f"QListWidget {{ background: {COLORS['bg_input']}; "
@@ -326,7 +324,7 @@ class WorkshopPanel(QWidget):
         kg.addLayout(kb_btn_row)
 
         self.knowledge_input = QTextEdit()
-        self.knowledge_input.setMaximumHeight(100)
+        self.knowledge_input.setMaximumHeight(72)
         self.knowledge_input.setPlaceholderText(
             "输入或导入场景规则/教程，例如：\n"
             "• 这是王者荣耀5v5 MOBA 游戏\n"
@@ -349,10 +347,10 @@ class WorkshopPanel(QWidget):
         self.learn_btn = QPushButton("开始学习")
         self.learn_btn.setObjectName("startBtn")
         self.learn_btn.setCursor(Qt.PointingHandCursor)
-        self.learn_btn.setMinimumHeight(42)
+        self.learn_btn.setMinimumHeight(34)
         self.learn_btn.setStyleSheet(
             self.learn_btn.styleSheet() +
-            "QPushButton#startBtn { font-size: 15px; }"
+            "QPushButton#startBtn { font-size: 13px; }"
         )
         self.learn_btn.clicked.connect(self._on_learn_clicked)
         layout.addWidget(self.learn_btn)
@@ -368,7 +366,7 @@ class WorkshopPanel(QWidget):
         # ━━━ 学习进度 + 见解 ━━━
         progress_group = QGroupBox("学习进度")
         pg = QVBoxLayout(progress_group)
-        pg.setSpacing(6)
+        pg.setSpacing(4)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -382,7 +380,7 @@ class WorkshopPanel(QWidget):
 
         self.insight_text = QTextEdit()
         self.insight_text.setReadOnly(True)
-        self.insight_text.setMaximumHeight(100)
+        self.insight_text.setMaximumHeight(68)
         self.insight_text.setPlaceholderText("LLM 分析见解...")
         pg.addWidget(self.insight_text)
 
@@ -391,7 +389,7 @@ class WorkshopPanel(QWidget):
         # ━━━ 模型管理 ━━━
         model_group = QGroupBox("训练产出")
         mg_layout = QVBoxLayout(model_group)
-        mg_layout.setSpacing(6)
+        mg_layout.setSpacing(4)
 
         from .train_chart import TrainChart
         self.train_chart = TrainChart()
@@ -421,7 +419,7 @@ class WorkshopPanel(QWidget):
         # ━━━ 日志 ━━━
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(150)
+        self.log_text.setMaximumHeight(100)
         layout.addWidget(self.log_text)
 
         # ━━━ 高级设置（折叠） ━━━

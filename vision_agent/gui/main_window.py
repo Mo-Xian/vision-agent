@@ -23,19 +23,19 @@ _MODE_BTN_STYLE = f"""
 QPushButton#modeBtnActive {{
     background-color: {COLORS['accent']};
     color: white;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: bold;
-    border-radius: 8px;
-    padding: 10px 0px;
+    border-radius: 6px;
+    padding: 6px 0px;
     border: none;
 }}
 QPushButton#modeBtnInactive {{
     background-color: {COLORS['bg_card']};
     color: {COLORS['text_secondary']};
-    font-size: 14px;
+    font-size: 13px;
     font-weight: bold;
-    border-radius: 8px;
-    padding: 10px 0px;
+    border-radius: 6px;
+    padding: 6px 0px;
     border: 1px solid {COLORS['border']};
 }}
 QPushButton#modeBtnInactive:hover {{
@@ -100,8 +100,8 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(8, 8, 8, 8)
-        root_layout.setSpacing(8)
+        root_layout.setContentsMargins(6, 4, 6, 4)
+        root_layout.setSpacing(4)
 
         # 模式切换
         mode_row = QHBoxLayout()
@@ -133,7 +133,7 @@ class MainWindow(QMainWindow):
         # 底部日志
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(120)
+        self.log_text.setMaximumHeight(80)
         self.log_text.setPlaceholderText("系统日志...")
         root_layout.addWidget(self.log_text)
 

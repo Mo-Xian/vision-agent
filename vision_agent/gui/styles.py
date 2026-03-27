@@ -44,16 +44,18 @@ COLORS = {
 MAIN_STYLESHEET = f"""
 /* ── 全局 ── */
 QMainWindow {{ background-color: {COLORS['bg_base']}; }}
-QWidget {{ font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; }}
+QWidget {{ font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif; background-color: transparent; }}
+QScrollArea {{ background-color: {COLORS['bg_base']}; }}
+QScrollArea > QWidget > QWidget {{ background-color: {COLORS['bg_base']}; }}
 
 /* ── 分组框 ── */
 QGroupBox {{
     background-color: {COLORS['bg_card']};
     border: 1px solid {COLORS['border']};
-    border-radius: 10px;
-    margin-top: 18px;
-    padding: 14px;
-    padding-top: 32px;
+    border-radius: 8px;
+    margin-top: 10px;
+    padding: 8px 10px;
+    padding-top: 24px;
     color: {COLORS['text']};
     font-weight: 600;
     font-size: 13px;
@@ -61,21 +63,21 @@ QGroupBox {{
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 12px;
-    top: 4px;
-    padding: 3px 10px;
-    font-size: 13px;
+    left: 10px;
+    top: 2px;
+    padding: 2px 8px;
+    font-size: 12px;
     font-weight: 700;
     color: {COLORS['accent']};
     background-color: {COLORS['bg_card']};
-    border: 1px solid {COLORS['border']};
-    border-radius: 4px;
+    border: none;
+    border-radius: 3px;
 }}
 
 /* ── 标签 ── */
 QLabel {{
     color: {COLORS['text_secondary']};
-    font-size: 13px;
+    font-size: 12px;
     padding: 0px;
 }}
 
@@ -84,10 +86,10 @@ QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {{
     background-color: {COLORS['bg_input']};
     color: {COLORS['text']};
     border: 1px solid {COLORS['border']};
-    border-radius: 6px;
-    padding: 5px 10px;
-    min-height: 26px;
-    font-size: 13px;
+    border-radius: 5px;
+    padding: 3px 8px;
+    min-height: 22px;
+    font-size: 12px;
     selection-background-color: {COLORS['accent']};
 }}
 QComboBox:hover, QLineEdit:hover, QSpinBox:hover, QDoubleSpinBox:hover {{
@@ -122,11 +124,11 @@ QComboBox QAbstractItemView {{
 
 /* ── 按钮通用 ── */
 QPushButton {{
-    border-radius: 6px;
-    padding: 7px 16px;
-    font-size: 13px;
+    border-radius: 5px;
+    padding: 4px 14px;
+    font-size: 12px;
     font-weight: 600;
-    min-height: 30px;
+    min-height: 24px;
     border: 1px solid transparent;
 }}
 QPushButton:disabled {{
@@ -158,9 +160,9 @@ QPushButton#browseBtn {{
     background-color: {COLORS['bg_input']};
     color: {COLORS['text_secondary']};
     border: 1px solid {COLORS['border']};
-    padding: 5px 10px;
-    min-height: 24px;
-    font-size: 12px;
+    padding: 3px 8px;
+    min-height: 20px;
+    font-size: 11px;
     font-weight: normal;
 }}
 QPushButton#browseBtn:hover {{
@@ -192,10 +194,10 @@ QTextEdit {{
     background-color: {COLORS['bg_input']};
     color: {COLORS['log_green']};
     border: 1px solid {COLORS['border']};
-    border-radius: 8px;
+    border-radius: 6px;
     font-family: "Cascadia Code", "Consolas", "Courier New", monospace;
-    font-size: 12px;
-    padding: 8px;
+    font-size: 11px;
+    padding: 6px;
     selection-background-color: {COLORS['accent']};
 }}
 
@@ -241,11 +243,11 @@ QTabBar::tab:selected {{
 QProgressBar {{
     background-color: {COLORS['bg_input']};
     border: 1px solid {COLORS['border']};
-    border-radius: 6px;
+    border-radius: 5px;
     text-align: center;
     color: {COLORS['text']};
-    font-size: 12px;
-    min-height: 22px;
+    font-size: 11px;
+    min-height: 18px;
 }}
 QProgressBar::chunk {{
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,

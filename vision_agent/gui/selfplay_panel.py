@@ -46,13 +46,13 @@ class SelfPlayPanel(QWidget):
         left_scroll.setFrameShape(QFrame.NoFrame)
         left_content = QWidget()
         left_layout = QVBoxLayout(left_content)
-        left_layout.setContentsMargins(8, 8, 8, 8)
-        left_layout.setSpacing(10)
+        left_layout.setContentsMargins(6, 4, 6, 4)
+        left_layout.setSpacing(6)
 
         # ━━━ 部署目标 ━━━
         target_group = QGroupBox("部署目标")
         tg = QVBoxLayout(target_group)
-        tg.setSpacing(6)
+        tg.setSpacing(4)
 
         target_row = QHBoxLayout()
         target_row.addWidget(QLabel("目标"))
@@ -125,7 +125,7 @@ class SelfPlayPanel(QWidget):
         # ━━━ 游戏预设 ━━━
         preset_group = QGroupBox("游戏预设")
         pg = QVBoxLayout(preset_group)
-        pg.setSpacing(6)
+        pg.setSpacing(4)
 
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("预设"))
@@ -150,7 +150,7 @@ class SelfPlayPanel(QWidget):
         # ━━━ Agent 部署 ━━━
         agent_group = QGroupBox("Agent 部署")
         ag = QVBoxLayout(agent_group)
-        ag.setSpacing(6)
+        ag.setSpacing(4)
 
         agent_info = QLabel(
             "选择训练好的模型（BC 或 DQN），Agent 将根据模型决策自动操控游戏。"
@@ -174,13 +174,13 @@ class SelfPlayPanel(QWidget):
         self.agent_start_btn = QPushButton("Agent 接管")
         self.agent_start_btn.setObjectName("purpleBtn")
         self.agent_start_btn.setCursor(Qt.PointingHandCursor)
-        self.agent_start_btn.setMinimumHeight(42)
+        self.agent_start_btn.setMinimumHeight(32)
         agent_btn_row.addWidget(self.agent_start_btn)
 
         self.agent_stop_btn = QPushButton("停止")
         self.agent_stop_btn.setObjectName("stopBtn")
         self.agent_stop_btn.setCursor(Qt.PointingHandCursor)
-        self.agent_stop_btn.setMinimumHeight(42)
+        self.agent_stop_btn.setMinimumHeight(32)
         self.agent_stop_btn.setEnabled(False)
         agent_btn_row.addWidget(self.agent_stop_btn)
         ag.addLayout(agent_btn_row)
@@ -194,7 +194,7 @@ class SelfPlayPanel(QWidget):
         # ━━━ 日志 ━━━
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
+        self.log_text.setMaximumHeight(120)
         self.log_text.setPlaceholderText("Agent 日志...")
         left_layout.addWidget(self.log_text)
 
@@ -209,7 +209,7 @@ class SelfPlayPanel(QWidget):
 
         screen_label = QLabel("实时画面")
         screen_label.setStyleSheet(
-            f"color: {COLORS['text']}; font-size: 13px; font-weight: bold; padding: 4px;"
+            f"color: {COLORS['text']}; font-size: 12px; font-weight: bold; padding: 2px;"
         )
         right_layout.addWidget(screen_label)
 

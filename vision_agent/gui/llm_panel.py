@@ -26,8 +26,8 @@ class LLMPanel(QWidget):
         scroll.setFrameShape(QFrame.NoFrame)
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
 
         # 说明
         hint = QLabel("标注、自动学习、对话控制共用此配置")
@@ -64,13 +64,13 @@ class LLMPanel(QWidget):
         self.llm_test_btn = QPushButton("测试连接")
         self.llm_test_btn.setObjectName("infoBtn")
         self.llm_test_btn.setCursor(Qt.PointingHandCursor)
-        self.llm_test_btn.setMinimumHeight(38)
+        self.llm_test_btn.setMinimumHeight(30)
         btn_row.addWidget(self.llm_test_btn)
 
         self.llm_save_btn = QPushButton("保存配置")
         self.llm_save_btn.setObjectName("startBtn")
         self.llm_save_btn.setCursor(Qt.PointingHandCursor)
-        self.llm_save_btn.setMinimumHeight(38)
+        self.llm_save_btn.setMinimumHeight(30)
         btn_row.addWidget(self.llm_save_btn)
 
         layout.addLayout(btn_row)
