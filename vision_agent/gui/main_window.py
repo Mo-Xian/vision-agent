@@ -166,10 +166,6 @@ class MainWindow(QMainWindow):
         wp.recording_stopped.connect(self._stop_recording)
         wp.view_models_btn.clicked.connect(self._view_models)
 
-        # 自对弈训练（在训练工坊中）
-        wp.selfplay_start_requested.connect(self._start_selfplay)
-        wp.selfplay_stop_requested.connect(self._stop_selfplay)
-
         # Agent 部署面板
         sp.agent_start_requested.connect(self._start_agent)
         sp.agent_stop_requested.connect(self._stop_agent)
@@ -458,8 +454,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        wp.set_selfplay_state(True)
-
         def _run():
             try:
                 from ..rl.preset import load_selfplay_preset
@@ -470,8 +464,6 @@ class MainWindow(QMainWindow):
 
                 def _on_stats(s):
                     self._selfplay_stats.emit(s)
-                    # 更新工坊面板统计
-                    QTimer.singleShot(0, lambda: wp.update_selfplay_stats(s))
 
                 self._selfplay_loop = SelfPlayLoop(
                     action_zones=preset["action_zones"],
@@ -505,7 +497,7 @@ class MainWindow(QMainWindow):
             finally:
                 self._selfplay_loop = None
                 self._stop_frame_capture()
-                QTimer.singleShot(0, lambda: wp.set_selfplay_state(False))
+                pass  # selfplay 结束
 
         threading.Thread(target=_run, daemon=True).start()
         self._log("[自对弈] 启动训练...")
@@ -729,8 +721,6 @@ class MainWindow(QMainWindow):
         s.setValue("decision/model", lp.llm_model_combo.currentText())
         s.setValue("decision/base_url", lp.llm_base_url.text())
         s.setValue("train/epochs", wp.epochs_spin.value())
-        s.setValue("train/lr", wp.lr_spin.value())
-        s.setValue("train/rl_steps", wp.rl_steps_spin.value())
 
     def _load_settings(self):
         s = self._settings
@@ -746,12 +736,6 @@ class MainWindow(QMainWindow):
             lp.llm_base_url.setText(s.value("decision/base_url"))
         if s.value("train/epochs") is not None:
             try: wp.epochs_spin.setValue(int(s.value("train/epochs", 100)))
-            except (TypeError, ValueError): pass
-        if s.value("train/lr") is not None:
-            try: wp.lr_spin.setValue(float(s.value("train/lr", 0.001)))
-            except (TypeError, ValueError): pass
-        if s.value("train/rl_steps") is not None:
-            try: wp.rl_steps_spin.setValue(int(s.value("train/rl_steps", 2000)))
             except (TypeError, ValueError): pass
 
     def closeEvent(self, event):

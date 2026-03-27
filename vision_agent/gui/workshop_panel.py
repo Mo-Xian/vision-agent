@@ -116,16 +116,12 @@ class WorkshopPanel(QWidget):
     recording_started = Signal()
     recording_stopped = Signal()
     scene_changed = Signal(str)
-    selfplay_start_requested = Signal()
-    selfplay_stop_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_scene = None
         self._scene_manager = None
         self._build_ui()
-        self.sp_start_btn.clicked.connect(self.selfplay_start_requested)
-        self.sp_stop_btn.clicked.connect(self.selfplay_stop_requested)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -375,71 +371,6 @@ class WorkshopPanel(QWidget):
 
         layout.addWidget(model_group)
 
-        # ━━━ 自对弈训练（手机 RL） ━━━
-        selfplay_section = CollapsibleSection("自对弈训练（手机端 RL）")
-        sp_layout = selfplay_section.content_layout()
-
-        sp_info = QLabel(
-            "连接手机后，通过 DQN 强化学习自动训练。\n"
-            "可用上方 BC 模型热启动加速收敛。需先在「Agent 部署」中配置设备。"
-        )
-        sp_info.setWordWrap(True)
-        sp_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        sp_layout.addWidget(sp_info)
-
-        sp_form = QFormLayout()
-        sp_form.setSpacing(4)
-
-        self.sp_preset_combo = QComboBox()
-        self.sp_preset_combo.addItems(["wzry - 王者荣耀", "fps - FPS 射击", "generic - 通用"])
-        sp_form.addRow("游戏预设", self.sp_preset_combo)
-
-        sp_bc_row = QHBoxLayout()
-        self.sp_bc_model = QLineEdit()
-        self.sp_bc_model.setPlaceholderText("BC 模型目录（可选，热启动）")
-        sp_bc_row.addWidget(self.sp_bc_model, 1)
-        self.sp_bc_browse_btn = QPushButton("...")
-        self.sp_bc_browse_btn.setObjectName("browseBtn")
-        self.sp_bc_browse_btn.setMaximumWidth(30)
-        self.sp_bc_browse_btn.clicked.connect(self._browse_sp_bc_model)
-        sp_bc_row.addWidget(self.sp_bc_browse_btn)
-        sp_form.addRow("热启动模型", sp_bc_row)
-
-        self.sp_fps_spin = QSpinBox()
-        self.sp_fps_spin.setRange(1, 30)
-        self.sp_fps_spin.setValue(5)
-        sp_form.addRow("帧率 (FPS)", self.sp_fps_spin)
-
-        self.sp_max_episodes = QSpinBox()
-        self.sp_max_episodes.setRange(0, 99999)
-        self.sp_max_episodes.setValue(0)
-        self.sp_max_episodes.setSpecialValueText("无限制")
-        sp_form.addRow("最大对局数", self.sp_max_episodes)
-
-        sp_layout.addLayout(sp_form)
-
-        sp_btn_row = QHBoxLayout()
-        self.sp_start_btn = QPushButton("启动自对弈")
-        self.sp_start_btn.setObjectName("startBtn")
-        self.sp_start_btn.setCursor(Qt.PointingHandCursor)
-        self.sp_start_btn.setMinimumHeight(36)
-        sp_btn_row.addWidget(self.sp_start_btn)
-
-        self.sp_stop_btn = QPushButton("停止")
-        self.sp_stop_btn.setObjectName("stopBtn")
-        self.sp_stop_btn.setCursor(Qt.PointingHandCursor)
-        self.sp_stop_btn.setMinimumHeight(36)
-        self.sp_stop_btn.setEnabled(False)
-        sp_btn_row.addWidget(self.sp_stop_btn)
-        sp_layout.addLayout(sp_btn_row)
-
-        # 训练统计
-        self.sp_stats_label = QLabel("")
-        self.sp_stats_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 12px;")
-        sp_layout.addWidget(self.sp_stats_label)
-
-        layout.addWidget(selfplay_section)
-
         # ━━━ 日志 ━━━
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -450,8 +381,6 @@ class WorkshopPanel(QWidget):
         more = CollapsibleSection("高级设置")
         mg = more.content_layout()
 
-        mg.addWidget(QLabel("LLM 配置使用全局 LLM 设置"))
-
         train_form = QFormLayout()
         train_form.setSpacing(4)
 
@@ -460,18 +389,9 @@ class WorkshopPanel(QWidget):
         self.epochs_spin.setValue(100)
         train_form.addRow("训练轮数", self.epochs_spin)
 
-        self.lr_spin = QDoubleSpinBox()
-        self.lr_spin.setRange(0.0001, 0.1)
-        self.lr_spin.setSingleStep(0.0005)
-        self.lr_spin.setDecimals(4)
-        self.lr_spin.setValue(0.001)
-        train_form.addRow("学习率", self.lr_spin)
-
-        self.rl_steps_spin = QSpinBox()
-        self.rl_steps_spin.setRange(0, 50000)
-        self.rl_steps_spin.setValue(2000)
-        self.rl_steps_spin.setSingleStep(500)
-        train_form.addRow("RL 步数", self.rl_steps_spin)
+        self.sp_preset_combo = QComboBox()
+        self.sp_preset_combo.addItems(["wzry - 王者荣耀", "fps - FPS 射击", "generic - 通用"])
+        train_form.addRow("RL 游戏预设", self.sp_preset_combo)
 
         mg.addLayout(train_form)
 
@@ -484,38 +404,11 @@ class WorkshopPanel(QWidget):
     def _on_learn_clicked(self):
         self.learn_from_recording_requested.emit()
 
-    # ── 自对弈训练 ──
-
-    def _browse_sp_bc_model(self):
-        dlg = ModelBrowserDialog(self, base_dir="runs")
-        if dlg.exec() == QDialog.Accepted and dlg.selected_path():
-            self.sp_bc_model.setText(dlg.selected_path())
-
     def get_selfplay_config(self) -> dict:
-        """获取自对弈训练配置。"""
+        """获取 RL 预设配置（统一管线使用）。"""
         text = self.sp_preset_combo.currentText()
         preset_name = text.split(" - ")[0].strip()
-        return {
-            "preset": preset_name,
-            "bc_model_dir": self.sp_bc_model.text().strip(),
-            "fps": self.sp_fps_spin.value(),
-            "max_episodes": self.sp_max_episodes.value(),
-        }
-
-    def set_selfplay_state(self, running: bool):
-        self.sp_start_btn.setEnabled(not running)
-        self.sp_stop_btn.setEnabled(running)
-        if not running:
-            self.sp_stats_label.setText("")
-
-    def update_selfplay_stats(self, stats: dict):
-        self.sp_stats_label.setText(
-            f"对局: {stats.get('episodes', 0)} | "
-            f"步数: {stats.get('total_steps', 0)} | "
-            f"ε: {stats.get('epsilon', 1.0):.3f} | "
-            f"奖励: {stats.get('avg_reward_10ep', 0):.1f} | "
-            f"loss: {stats.get('avg_loss_100', 0):.6f}"
-        )
+        return {"preset": preset_name}
 
     # ── 窗口管理 ──
 
