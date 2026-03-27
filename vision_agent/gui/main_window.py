@@ -322,21 +322,23 @@ class MainWindow(QMainWindow):
             rec_dir = f"recordings/{_time.strftime('%Y%m%d_%H%M%S')}"
 
         if wp.is_remote_source():
-            # 远程 PC 录制
-            from ..data.remote_recorder import RemoteRecorder
-            host, port = wp.get_remote_config()
-            if not host:
-                self._log("[录制] 请输入远程 PC 的 IP 地址")
+            # 远程 PC 录制（通过中转服务）
+            hub = wp.get_hub()
+            if not hub or not hub.is_running:
+                self._log("[录制] 请先启动中转服务")
                 return
+            if not hub.is_client_connected:
+                self._log("[录制] 中转服务已启动，但尚无远程客户端连接")
+                return
+            from ..data.remote_recorder import RemoteRecorder
             self._recorder = RemoteRecorder(
-                host=host,
-                port=port,
+                hub=hub,
                 output_dir=rec_dir,
                 on_log=lambda msg: self._learn_log.emit(msg),
             )
             self._recorder.start()
             wp.set_recording_state(True)
-            self._log(f"[录制] 远程 PC 录制开始 ({host}:{port})...")
+            self._log(f"[录制] 远程录制开始（客户端: {hub.client_addr}）...")
         elif wp.is_mobile_source():
             # 手机录制
             from ..data.mobile_recorder import MobileRecorder
@@ -544,11 +546,14 @@ class MainWindow(QMainWindow):
                 preset = load_selfplay_preset(preset_name)
 
                 if is_remote:
-                    host, port = sp.get_remote_agent_config()
-                    if not host:
-                        self._selfplay_log.emit("[Agent 错误] 请输入远程 PC 地址")
+                    hub = sp.get_agent_hub()
+                    if not hub or not hub.is_running:
+                        self._selfplay_log.emit("[Agent 错误] 请先启动中转服务")
                         return
-                    self._run_agent_remote(model_dir, preset, host, port)
+                    if not hub.is_client_connected:
+                        self._selfplay_log.emit("[Agent 错误] 中转服务已启动，但尚无远程客户端连接")
+                        return
+                    self._run_agent_remote(model_dir, preset, hub)
                 elif is_mobile:
                     self._run_agent_mobile(model_dir, preset, device_serial)
                 else:
@@ -671,28 +676,10 @@ class MainWindow(QMainWindow):
                             logger.debug(f"按键执行失败: {e}")
             time.sleep(0.2)
 
-    def _run_agent_remote(self, model_dir: str, preset: dict, host: str, port: int):
-        """远程 PC Agent：WebSocket 获取画面 + 发送操控指令。"""
-        from ..data.remote_recorder import RemoteAgentConnection
+    def _run_agent_remote(self, model_dir: str, preset: dict, hub):
+        """远程 PC Agent：通过中转服务获取画面 + 发送操控指令。"""
         from ..decision.e2e_engine import E2EEngine
-
-        # 建立远程连接
-        conn = RemoteAgentConnection(
-            host, port,
-            on_log=lambda msg: self._selfplay_log.emit(msg),
-        )
-        conn.start()
-
-        # 等待连接
         import time
-        for _ in range(20):
-            if conn.is_connected:
-                break
-            time.sleep(0.5)
-        if not conn.is_connected:
-            self._selfplay_log.emit("[Agent] 无法连接远程 PC，请检查地址和采集服务")
-            conn.stop()
-            return
 
         # 加载决策引擎
         model_type = self._detect_model_type(model_dir)
@@ -704,20 +691,20 @@ class MainWindow(QMainWindow):
             engine = DQNEngine(
                 model_dir=model_dir,
                 touch_zones=preset.get("action_zones", []),
-                execute_actions=False,  # 不本地执行，通过远程发送
+                execute_actions=False,
             )
             engine_label = "DQN"
         engine.on_start()
         self._dqn_engine = engine
 
         self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir} ({engine_label})")
-        self._selfplay_log.emit(f"[Agent] 远程模式: {host}:{port} → 画面获取 + 操控指令")
+        self._selfplay_log.emit(f"[Agent] 远程模式: 中转服务 → 客户端 {hub.client_addr}")
 
         # Agent 循环
         action_key_map = preset.get("action_key_map", {})
         try:
             while self._agent_running:
-                frame = conn.get_frame()
+                frame = hub.get_frame()
                 if frame is None:
                     time.sleep(0.2)
                     continue
@@ -731,17 +718,15 @@ class MainWindow(QMainWindow):
                         self._selfplay_log.emit(
                             f"[Agent] {action.name} (conf={action.confidence:.2f})"
                         )
-                        # 发送操控指令到远程 PC
                         key_info = action_key_map.get(action.name, {})
                         key = key_info.get("key", "") if isinstance(key_info, dict) else ""
                         if not key:
                             key = action.parameters.get("key", "") if action.parameters else ""
                         if key:
-                            conn.send_key_tap(key)
+                            hub.send_key_tap(key)
 
                 time.sleep(0.2)
         finally:
-            conn.stop()
             engine.on_stop()
 
     @Slot()

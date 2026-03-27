@@ -6,16 +6,18 @@
 
 ## [v0.2.0] - 2026-03-27
 
-新增远程 PC 支持：录制和 Agent 控制均可跨局域网操作。
+远程 PC 支持（服务端-客户端架构）：训练和 Agent 控制均可跨局域网操作。
 
 ### 新功能
 
-- **远程 PC 录制**：WebSocket 实时推送画面 + 键鼠事件，本机接收并保存为标准训练格式
-- **远程 PC Agent 控制**：Agent 通过 WebSocket 获取远程画面进行决策，并将操控指令发回远程执行
-- **采集服务双向通信**：远程端同时推送画面和接收控制指令（key_tap/mouse_click 等）
-- **Agent 部署三模式**：手机（ADB 触控）、PC（pynput 键鼠）、远程 PC（WebSocket）
-- **GUI 远程目标**：录制源和 Agent 部署均新增"远程 PC"选项，含地址配置和连接测试
-- **CLI serve/remote 命令**：`python main.py serve` 启动采集服务，`python main.py remote <IP>` 连接录制
+- **服务端-客户端架构**：Vision Agent 主机运行中转服务（RemoteHub），远程 PC 运行轻量客户端（RemoteCaptureClient），所有训练和决策在服务端完成
+- **远程 PC 录制**：客户端推送画面 + 键鼠事件到中转服务，服务端接收并保存为标准训练格式
+- **远程 PC Agent 控制**：Agent 通过中转服务获取远程画面进行决策，操控指令经中转转发到客户端执行
+- **客户端自动重连**：网络断开后自动重连，远程 PC 无感恢复
+- **客户端独立 EXE**：`RemoteCaptureClient.exe` 单文件打包，远程 PC 无需安装 Python
+- **Agent 部署三模式**：手机（ADB 触控）、PC（pynput 键鼠）、远程 PC（中转服务）
+- **GUI 中转服务**：录制源和 Agent 部署均可启动/停止中转服务，显示本机地址供客户端连接
+- **CLI hub 命令**：`python main.py hub` 启动中转服务并录制
 
 ---
 

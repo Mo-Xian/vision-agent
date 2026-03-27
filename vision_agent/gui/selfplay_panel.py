@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox,
-    QLabel, QComboBox, QLineEdit, QPushButton,
+    QLabel, QComboBox, QLineEdit, QPushButton, QSpinBox,
     QTextEdit, QScrollArea, QFrame, QFileDialog, QSplitter,
 )
 
@@ -130,27 +130,29 @@ class SelfPlayPanel(QWidget):
         rem_layout.setContentsMargins(0, 0, 0, 0)
         rem_layout.setSpacing(4)
 
-        rhost_row = QHBoxLayout()
-        rhost_row.addWidget(QLabel("地址"))
-        self.remote_agent_host = QLineEdit()
-        self.remote_agent_host.setPlaceholderText("远程 PC IP，如 192.168.1.100")
-        rhost_row.addWidget(self.remote_agent_host, 1)
-        rhost_row.addWidget(QLabel(":"))
-        self.remote_agent_port = QComboBox()
-        self.remote_agent_port.setEditable(True)
-        self.remote_agent_port.addItem("9876")
+        rhub_row = QHBoxLayout()
+        rhub_row.addWidget(QLabel("端口"))
+        self.remote_agent_port = QSpinBox()
+        self.remote_agent_port.setRange(1, 65535)
+        self.remote_agent_port.setValue(9876)
         self.remote_agent_port.setMaximumWidth(70)
-        rhost_row.addWidget(self.remote_agent_port)
-        self.test_remote_agent_btn = QPushButton("测试")
-        self.test_remote_agent_btn.setObjectName("browseBtn")
-        self.test_remote_agent_btn.setMaximumWidth(50)
-        self.test_remote_agent_btn.clicked.connect(self._test_remote_agent)
-        rhost_row.addWidget(self.test_remote_agent_btn)
-        rem_layout.addLayout(rhost_row)
+        rhub_row.addWidget(self.remote_agent_port)
+        self.start_agent_hub_btn = QPushButton("启动中转服务")
+        self.start_agent_hub_btn.setObjectName("startBtn")
+        self.start_agent_hub_btn.clicked.connect(self._start_agent_hub)
+        rhub_row.addWidget(self.start_agent_hub_btn)
+        self.stop_agent_hub_btn = QPushButton("停止")
+        self.stop_agent_hub_btn.setObjectName("stopBtn")
+        self.stop_agent_hub_btn.setMaximumWidth(50)
+        self.stop_agent_hub_btn.setEnabled(False)
+        self.stop_agent_hub_btn.clicked.connect(self._stop_agent_hub)
+        rhub_row.addWidget(self.stop_agent_hub_btn)
+        rem_layout.addLayout(rhub_row)
 
         self.remote_agent_status = QLabel(
-            "Agent 将通过 WebSocket 获取远程画面并发送操控指令"
+            "启动中转服务后，远程客户端连接此地址，Agent 通过中转获取画面并发送操控指令"
         )
+        self.remote_agent_status.setWordWrap(True)
         self.remote_agent_status.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 11px;"
         )
@@ -303,36 +305,45 @@ class SelfPlayPanel(QWidget):
     def is_remote_target(self) -> bool:
         return self.target_combo.currentIndex() == 2
 
-    def get_remote_agent_config(self) -> tuple[str, int]:
-        host = self.remote_agent_host.text().strip()
-        port = int(self.remote_agent_port.currentText().strip() or "9876")
-        return host, port
+    def get_agent_hub(self):
+        """返回当前 Agent 中转服务 RemoteHub 实例。"""
+        return getattr(self, '_agent_hub', None)
 
-    def _test_remote_agent(self):
-        host, port = self.get_remote_agent_config()
-        if not host:
-            self.remote_agent_status.setText("请输入远程 PC 的 IP 地址")
-            self.remote_agent_status.setStyleSheet(
-                f"color: {COLORS['danger']}; font-size: 11px;"
-            )
-            return
+    def get_agent_hub_port(self) -> int:
+        return self.remote_agent_port.value()
 
-        self.remote_agent_status.setText("测试连接中...")
-        self.test_remote_agent_btn.setEnabled(False)
+    def _start_agent_hub(self):
+        from ..data.remote_hub import RemoteHub
+        port = self.get_agent_hub_port()
+        self._agent_hub = RemoteHub(
+            port=port,
+            on_log=lambda msg: self.remote_agent_status.setText(msg.split("] ", 1)[-1]),
+        )
+        self._agent_hub.start()
+        local_ip = self._agent_hub.get_local_ip()
+        self.remote_agent_status.setText(
+            f"中转服务已启动: ws://{local_ip}:{port}\n"
+            f"请在远程 PC 运行客户端连接此地址"
+        )
+        self.remote_agent_status.setStyleSheet(
+            f"color: {COLORS['success']}; font-size: 11px;"
+        )
+        self.start_agent_hub_btn.setEnabled(False)
+        self.stop_agent_hub_btn.setEnabled(True)
+        self.remote_agent_port.setEnabled(False)
 
-        import threading as _th
-
-        def _test():
-            from ..data.remote_recorder import RemoteRecorder
-            ok, msg = RemoteRecorder.test_connection(host, port, timeout=5)
-            color = COLORS['success'] if ok else COLORS['danger']
-            self.remote_agent_status.setText(msg)
-            self.remote_agent_status.setStyleSheet(
-                f"color: {color}; font-size: 11px;"
-            )
-            self.test_remote_agent_btn.setEnabled(True)
-
-        _th.Thread(target=_test, daemon=True).start()
+    def _stop_agent_hub(self):
+        hub = getattr(self, '_agent_hub', None)
+        if hub:
+            hub.stop()
+            self._agent_hub = None
+        self.remote_agent_status.setText("中转服务已停止")
+        self.remote_agent_status.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 11px;"
+        )
+        self.start_agent_hub_btn.setEnabled(True)
+        self.stop_agent_hub_btn.setEnabled(False)
+        self.remote_agent_port.setEnabled(True)
 
     def get_window_title(self) -> str:
         text = self.window_combo.currentText()

@@ -7,7 +7,7 @@
 
 **端到端行为克隆 + RL 自学习框架，用于游戏 AI 和桌面自动化。**
 
-录制人类操作 → 行为克隆训练 → 伪标签扩展 → RL 自对弈，全流程 GUI 可视化。支持 PC（窗口捕获 + 键鼠）、手机（scrcpy + ADB 触控）和远程 PC（局域网 WebSocket）。
+录制人类操作 → 行为克隆训练 → 伪标签扩展 → RL 自对弈，全流程 GUI 可视化。支持 PC（窗口捕获 + 键鼠）、手机（scrcpy + ADB 触控）和远程 PC（服务端中转 + 客户端采集，支持 Agent 远程操控）。
 
 > **核心思路**：看人怎么玩 → 模仿学会 → 自己练习变强。从零开始，不需要手写规则。
 
@@ -120,11 +120,10 @@ python main.py record --window "王者荣耀"
 python main.py mobile --check                        # 检查环境
 python main.py mobile --game moba                    # MOBA 预设
 
-# 远程 PC 录制（局域网跨 PC）
-python main.py serve                                 # 远程 PC: 启动采集服务
-python main.py serve --window "王者荣耀" --fps 15    # 远程 PC: 指定窗口
-python main.py remote 192.168.1.100                  # 本机: 连接并录制
-python main.py remote 192.168.1.100 --test           # 本机: 测试连接
+# 远程 PC 录制（服务端-客户端架构）
+python main.py hub                                   # 本机: 启动中转服务，等待客户端连接并录制
+python main.py hub --port 9876 -o recordings/remote  # 指定端口和输出目录
+# 远程 PC: 运行客户端 RemoteCaptureClient.exe ws://本机IP:9876
 
 # 行为克隆训练
 python main.py learn-bc recordings/session1 recordings/session2
@@ -149,9 +148,9 @@ python build_exe.py        # 跨平台打包脚本
 python build_exe.py --debug  # 带控制台的调试版
 # 产出在 dist/VisionAgent/
 
-# 远程采集服务打包（单文件 EXE，远程 PC 无需安装 Python）
+# 远程采集客户端打包（单文件 EXE，远程 PC 无需安装 Python）
 python build_server.py --onefile
-# 产出 dist/RemoteCaptureServer.exe
+# 产出 dist/RemoteCaptureClient.exe
 ```
 
 ### 自动发布
@@ -163,7 +162,7 @@ git tag v1.0.0
 git push origin v1.0.0
 # → GitHub Actions 自动打包 → Releases 页面下载：
 #   VisionAgent-v1.0.0-windows.zip        (主程序)
-#   RemoteCaptureServer-v1.0.0-windows.exe (远程采集服务)
+#   RemoteCaptureClient-v1.0.0-windows.exe (远程采集客户端)
 ```
 
 ---

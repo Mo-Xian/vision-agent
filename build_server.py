@@ -1,6 +1,7 @@
-"""PyInstaller 打包脚本 — 生成 RemoteCaptureServer.exe。
+"""PyInstaller 打包脚本 — 生成 RemoteCaptureClient.exe。
 
-远程 PC 上运行的轻量采集服务，打包为单文件 EXE，无需安装 Python。
+远程 PC 上运行的轻量采集客户端，打包为单文件 EXE，无需安装 Python。
+连接到 Vision Agent 中转服务，推送画面/事件，接收控制指令。
 
 用法:
     python build_server.py          # 正常打包（带控制台）
@@ -15,8 +16,8 @@ ROOT = Path(__file__).parent.resolve()
 
 
 def build(onefile: bool = False):
-    entry = str(ROOT / "vision_agent" / "data" / "remote_capture_server.py")
-    name = "RemoteCaptureServer"
+    entry = str(ROOT / "vision_agent" / "data" / "remote_capture_client.py")
+    name = "RemoteCaptureClient"
 
     hidden = [
         "cv2", "numpy", "mss",
@@ -35,7 +36,7 @@ def build(onefile: bool = False):
         sys.executable, "-m", "PyInstaller",
         "--noconfirm",
         "--name", name,
-        "--console",  # 采集服务需要控制台显示状态
+        "--console",  # 采集客户端需要控制台显示状态
     ]
 
     if onefile:
@@ -49,18 +50,18 @@ def build(onefile: bool = False):
 
     cmd.append(entry)
 
-    print(f"[build-server] Building {name}...")
-    print(f"[build-server] Entry: {entry}")
-    print(f"[build-server] Mode: {'onefile' if onefile else 'onedir'}")
+    print(f"[build-client] Building {name}...")
+    print(f"[build-client] Entry: {entry}")
+    print(f"[build-client] Mode: {'onefile' if onefile else 'onedir'}")
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        print("[build-server] FAILED")
+        print("[build-client] FAILED")
         sys.exit(1)
 
     if onefile:
-        print(f"[build-server] Done -> dist/{name}.exe")
+        print(f"[build-client] Done -> dist/{name}.exe")
     else:
-        print(f"[build-server] Done -> dist/{name}/")
+        print(f"[build-client] Done -> dist/{name}/")
 
 
 if __name__ == "__main__":

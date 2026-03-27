@@ -28,7 +28,7 @@ jobs:
       - name: Build VisionAgent EXE
         run: python build_exe.py
 
-      - name: Build RemoteCaptureServer EXE
+      - name: Build RemoteCaptureClient EXE
         run: python build_server.py --onefile
 
       - name: Copy config files
@@ -44,8 +44,8 @@ jobs:
           7z a -tzip ../VisionAgent-${{ github.ref_name }}-windows.zip VisionAgent/
         shell: bash
 
-      - name: Copy RemoteCaptureServer EXE
-        run: cp dist/RemoteCaptureServer.exe RemoteCaptureServer-${{ github.ref_name }}-windows.exe
+      - name: Copy RemoteCaptureClient EXE
+        run: cp dist/RemoteCaptureClient.exe RemoteCaptureClient-${{ github.ref_name }}-windows.exe
         shell: bash
 
       - name: Extract release notes from CHANGELOG
@@ -74,14 +74,14 @@ jobs:
           name: VisionAgent-windows
           path: |
             VisionAgent-${{ github.ref_name }}-windows.zip
-            RemoteCaptureServer-${{ github.ref_name }}-windows.exe
+            RemoteCaptureClient-${{ github.ref_name }}-windows.exe
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             VisionAgent-${{ github.ref_name }}-windows.zip
-            RemoteCaptureServer-${{ github.ref_name }}-windows.exe
+            RemoteCaptureClient-${{ github.ref_name }}-windows.exe
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') }}

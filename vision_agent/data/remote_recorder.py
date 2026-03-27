@@ -1,19 +1,20 @@
-"""远程 PC 录制器 — 连接远程采集服务，录制为标准格式。
+"""远程录制器 — 通过 RemoteHub 录制远程客户端画面为标准格式。
 
-连接 RemoteCaptureServer 的 WebSocket 流，接收画面和键鼠事件，
+使用 RemoteHub 接收远程客户端推送的画面和键鼠事件，
 保存为标准 recording.mp4 + actions.jsonl 格式，与训练管线完全兼容。
 
 用法:
-    recorder = RemoteRecorder(host="192.168.1.100", port=9876, output_dir="recordings/remote1")
+    hub = RemoteHub(port=9876)
+    hub.start()
+    recorder = RemoteRecorder(hub=hub, output_dir="recordings/remote1")
     recorder.start()
-    # ... 远程 PC 上的用户操作游戏 ...
+    # ... 远程客户端上的用户操作游戏 ...
     recorder.stop()
     # 产出: recording.mp4 + actions.jsonl + events.jsonl + meta.json
 """
 
 import json
 import logging
-import struct
 import threading
 import time
 from collections import defaultdict
@@ -41,15 +42,14 @@ class RemoteRecordingStats:
 
 
 class RemoteRecorder:
-    """连接远程 PC 采集服务，录制为标准训练数据格式。
+    """通过 RemoteHub 录制远程客户端画面为标准训练数据格式。
 
     接口与 GameRecorder 一致：start() / stop() / toggle_pause()。
     """
 
     def __init__(
         self,
-        host: str = "192.168.1.100",
-        port: int = 9876,
+        hub,
         output_dir: str = "recordings",
         action_map: dict[str, str] | None = None,
         on_log=None,
@@ -58,16 +58,14 @@ class RemoteRecorder:
     ):
         """
         Args:
-            host: 远程采集服务 IP
-            port: 远程采集服务端口
+            hub: RemoteHub 实例（已启动，等待客户端连接）
             output_dir: 本地录制输出目录
             action_map: 按键→动作名映射
             on_log: 日志回调
             on_stats: 录制完成统计回调
             on_frame: 实时帧回调（用于画面预览）
         """
-        self._host = host
-        self._port = port
+        self._hub = hub
         self._output_dir = Path(output_dir)
         self._action_map = action_map or {}
         self._on_log = on_log
@@ -76,9 +74,8 @@ class RemoteRecorder:
 
         self._recording = False
         self._paused = False
-        self._connected = False
         self._stop_event = threading.Event()
-        self._receive_thread = None
+        self._record_thread = None
 
         self._video_writer = None
         self._events_file = None
@@ -86,7 +83,6 @@ class RemoteRecorder:
         self._events: list[dict] = []
         self._frame_count = 0
         self._lock = threading.Lock()
-        self._remote_meta: dict = {}
 
     @property
     def is_recording(self) -> bool:
@@ -102,10 +98,10 @@ class RemoteRecorder:
 
     @property
     def is_connected(self) -> bool:
-        return self._connected
+        return self._hub.is_client_connected
 
     def start(self):
-        """开始远程录制。"""
+        """开始录制（从 hub 获取帧和事件）。"""
         if self._recording:
             return
 
@@ -116,17 +112,16 @@ class RemoteRecorder:
         self._paused = False
         self._frame_count = 0
         self._recording = True
-        self._connected = False
 
         self._events_file = open(
             self._output_dir / "events.jsonl", "w", encoding="utf-8"
         )
 
-        self._receive_thread = threading.Thread(
-            target=self._receive_loop, daemon=True
+        self._record_thread = threading.Thread(
+            target=self._record_loop, daemon=True
         )
-        self._receive_thread.start()
-        self._log(f"[远程录制] 连接 {self._host}:{self._port}...")
+        self._record_thread.start()
+        self._log("[远程录制] 开始录制（等待远程客户端画面）...")
 
     def stop(self) -> RemoteRecordingStats:
         """停止录制并保存数据。"""
@@ -136,8 +131,8 @@ class RemoteRecorder:
         self._recording = False
         self._stop_event.set()
 
-        if self._receive_thread:
-            self._receive_thread.join(timeout=5)
+        if self._record_thread:
+            self._record_thread.join(timeout=5)
 
         if self._video_writer:
             self._video_writer.release()
@@ -155,81 +150,49 @@ class RemoteRecorder:
         state = "暂停" if self._paused else "恢复"
         self._log(f"[远程录制] {state}")
 
-    # ── 接收线程 ──
+    # ── 录制线程 ──
 
-    def _receive_loop(self):
-        try:
-            from websockets.sync.client import connect
-        except ImportError:
-            self._log("[远程录制] 需要安装 websockets: pip install websockets")
-            self._recording = False
-            return
+    def _record_loop(self):
+        """轮询 hub 获取帧和事件。"""
+        last_frame = None
+        fps = 10
+        interval = 1.0 / fps
 
-        uri = f"ws://{self._host}:{self._port}"
-        try:
-            with connect(uri, max_size=10_000_000, open_timeout=10) as ws:
-                self._connected = True
-                self._log(f"[远程录制] 已连接 {uri}")
+        while not self._stop_event.is_set():
+            if self._paused:
+                time.sleep(0.1)
+                continue
 
-                while not self._stop_event.is_set():
-                    try:
-                        msg = ws.recv(timeout=1)
-                    except TimeoutError:
-                        continue
-                    except Exception:
-                        break
+            # 获取事件
+            events = self._hub.get_events()
+            for evt in events:
+                self._handle_event(evt)
 
-                    if isinstance(msg, str):
-                        data = json.loads(msg)
-                        if data.get("type") == "meta":
-                            self._remote_meta = data
-                            self._log(
-                                f"[远程录制] 远程画面: "
-                                f"{data.get('width')}x{data.get('height')} "
-                                f"FPS={data.get('fps')} "
-                                f"窗口={data.get('window') or '全屏'}"
-                            )
-                        elif data.get("type") == "error":
-                            self._log(f"[远程录制] 服务端拒绝: {data.get('msg')}")
-                            break
-                        else:
-                            if not self._paused:
-                                self._handle_event(data)
-                    else:
-                        if not self._paused:
-                            self._handle_frame(msg)
+            # 获取帧
+            frame_data = self._hub.get_frame_with_ts()
+            if frame_data is not None and frame_data is not last_frame:
+                last_frame = frame_data
+                ts, frame = frame_data
+                self._handle_frame(ts, frame)
 
-        except ConnectionRefusedError:
-            self._log(f"[远程录制] 连接被拒绝 — 请确认远程采集服务已启动")
-        except OSError as e:
-            self._log(f"[远程录制] 网络错误: {e}")
-        except Exception as e:
-            self._log(f"[远程录制] 连接异常: {e}")
-        finally:
-            self._connected = False
-            if not self._stop_event.is_set():
-                self._log("[远程录制] 连接已断开")
+                # 从 meta 更新 fps
+                meta = self._hub.client_meta
+                if meta.get("fps"):
+                    new_fps = meta["fps"]
+                    if new_fps != fps:
+                        fps = new_fps
+                        interval = 1.0 / fps
 
-    def _handle_frame(self, msg: bytes):
-        """处理二进制帧消息：8字节时间戳 + JPEG。"""
-        if len(msg) < 9:
-            return
+            time.sleep(interval * 0.5)  # 轮询频率 = 2x FPS
 
-        ts = struct.unpack(">d", msg[:8])[0]
-        jpeg_bytes = msg[8:]
-
-        frame = cv2.imdecode(
-            np.frombuffer(jpeg_bytes, dtype=np.uint8),
-            cv2.IMREAD_COLOR,
-        )
-        if frame is None:
-            return
-
+    def _handle_frame(self, ts: float, frame: np.ndarray):
+        """处理一帧画面。"""
         if self._video_writer is None:
             h, w = frame.shape[:2]
             video_path = str(self._output_dir / "recording.mp4")
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            fps = self._remote_meta.get("fps", 10)
+            meta = self._hub.client_meta
+            fps = meta.get("fps", 10)
             self._video_writer = cv2.VideoWriter(video_path, fourcc, fps, (w, h))
 
         self._video_writer.write(frame)
@@ -248,7 +211,6 @@ class RemoteRecorder:
         """处理键鼠事件。"""
         with self._lock:
             self._events.append(data)
-        # 流式写入事件文件
         if self._events_file and not self._events_file.closed:
             self._events_file.write(json.dumps(data, ensure_ascii=False) + "\n")
             self._events_file.flush()
@@ -332,17 +294,18 @@ class RemoteRecorder:
         # 保存元数据
         video_path = str(self._output_dir / "recording.mp4")
         meta_path = self._output_dir / "meta.json"
+        client_addr = self._hub.client_addr
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "total_frames": self._frame_count,
                     "total_events": len(self._events),
                     "duration_sec": round(duration, 1),
-                    "fps_target": self._remote_meta.get("fps", 10),
+                    "fps_target": self._hub.client_meta.get("fps", 10),
                     "fps_actual": round(actual_fps, 1),
                     "action_dist": dict(action_dist),
                     "action_map": self._action_map,
-                    "remote_host": f"{self._host}:{self._port}",
+                    "remote_client": client_addr,
                     "record_source": "remote_pc",
                     "video_path": video_path,
                     "actions_path": actions_path,
@@ -361,194 +324,13 @@ class RemoteRecorder:
             output_dir=str(self._output_dir),
             video_path=video_path,
             actions_path=actions_path,
-            remote_host=f"{self._host}:{self._port}",
+            remote_host=client_addr,
         )
 
         if self._on_stats:
             self._on_stats(stats)
 
         return stats
-
-    def _log(self, msg: str):
-        logger.info(msg)
-        if self._on_log:
-            try:
-                self._on_log(msg)
-            except Exception:
-                pass
-
-    # ── 连接测试（静态方法，GUI 用）──
-
-    @staticmethod
-    def test_connection(host: str, port: int, timeout: float = 5) -> tuple[bool, str]:
-        """测试远程采集服务是否可连接。
-
-        Returns:
-            (success, message)
-        """
-        try:
-            from websockets.sync.client import connect
-        except ImportError:
-            return False, "websockets 未安装"
-
-        uri = f"ws://{host}:{port}"
-        try:
-            with connect(uri, open_timeout=timeout, close_timeout=2) as ws:
-                msg = ws.recv(timeout=timeout)
-                if isinstance(msg, str):
-                    data = json.loads(msg)
-                    if data.get("type") == "meta":
-                        w, h = data.get("width", 0), data.get("height", 0)
-                        fps = data.get("fps", 0)
-                        return True, f"已连接 | {w}x{h} FPS={fps}"
-                    if data.get("type") == "error":
-                        return False, data.get("msg", "服务端拒绝")
-                return False, "未收到元数据"
-        except ConnectionRefusedError:
-            return False, "连接被拒绝 — 服务未启动"
-        except TimeoutError:
-            return False, "连接超时"
-        except OSError as e:
-            return False, f"网络错误: {e}"
-        except Exception as e:
-            return False, str(e)
-
-
-class RemoteAgentConnection:
-    """Agent 远程控制连接 — 接收画面 + 发送操作指令。
-
-    用于 Agent 部署模式：连接远程采集服务，获取游戏画面用于决策，
-    并将决策结果（键鼠操作）发回远程 PC 执行。
-
-    用法:
-        conn = RemoteAgentConnection("192.168.1.100", 9876)
-        conn.start()
-        frame = conn.get_frame()        # 获取最新画面
-        conn.send_key_tap("a")          # 远程按键
-        conn.send_mouse_click(100, 200) # 远程点击
-        conn.stop()
-    """
-
-    def __init__(self, host: str, port: int, on_log=None):
-        self._host = host
-        self._port = port
-        self._on_log = on_log
-        self._ws = None
-        self._connected = False
-        self._running = False
-        self._stop_event = threading.Event()
-        self._receive_thread = None
-        self._latest_frame = None
-        self._frame_lock = threading.Lock()
-        self._remote_meta: dict = {}
-
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
-
-    @property
-    def frame_size(self) -> tuple[int, int]:
-        return (self._remote_meta.get("width", 0), self._remote_meta.get("height", 0))
-
-    def start(self):
-        """连接远程采集服务。"""
-        self._running = True
-        self._stop_event.clear()
-        self._receive_thread = threading.Thread(
-            target=self._receive_loop, daemon=True
-        )
-        self._receive_thread.start()
-
-    def stop(self):
-        """断开连接。"""
-        self._running = False
-        self._stop_event.set()
-        if self._receive_thread:
-            self._receive_thread.join(timeout=5)
-        self._connected = False
-
-    def get_frame(self) -> np.ndarray | None:
-        """获取最新一帧画面（BGR numpy array）。"""
-        with self._frame_lock:
-            return self._latest_frame
-
-    def send_key_tap(self, key: str):
-        """远程按键（按下+释放）。"""
-        self._send_cmd({"cmd": "key_tap", "key": key})
-
-    def send_key_press(self, key: str):
-        """远程按下键。"""
-        self._send_cmd({"cmd": "key_press", "key": key})
-
-    def send_key_release(self, key: str):
-        """远程释放键。"""
-        self._send_cmd({"cmd": "key_release", "key": key})
-
-    def send_mouse_click(self, x: int, y: int, button: str = "left"):
-        """远程鼠标点击。"""
-        self._send_cmd({"cmd": "mouse_click", "x": x, "y": y, "button": button})
-
-    def send_mouse_move(self, x: int, y: int):
-        """远程鼠标移动。"""
-        self._send_cmd({"cmd": "mouse_move", "x": x, "y": y})
-
-    def _send_cmd(self, data: dict):
-        if self._ws and self._connected:
-            try:
-                self._ws.send(json.dumps(data))
-            except Exception as e:
-                logger.debug(f"发送控制指令失败: {e}")
-
-    def _receive_loop(self):
-        try:
-            from websockets.sync.client import connect
-        except ImportError:
-            self._log("[远程Agent] websockets 未安装")
-            return
-
-        uri = f"ws://{self._host}:{self._port}"
-        try:
-            with connect(uri, max_size=10_000_000, open_timeout=10) as ws:
-                self._ws = ws
-                self._connected = True
-                self._log(f"[远程Agent] 已连接 {uri}")
-
-                while not self._stop_event.is_set():
-                    try:
-                        msg = ws.recv(timeout=1)
-                    except TimeoutError:
-                        continue
-                    except Exception:
-                        break
-
-                    if isinstance(msg, str):
-                        data = json.loads(msg)
-                        if data.get("type") == "meta":
-                            self._remote_meta = data
-                            self._log(
-                                f"[远程Agent] 画面: "
-                                f"{data.get('width')}x{data.get('height')} "
-                                f"FPS={data.get('fps')}"
-                            )
-                    else:
-                        if len(msg) < 9:
-                            continue
-                        jpeg_bytes = msg[8:]
-                        frame = cv2.imdecode(
-                            np.frombuffer(jpeg_bytes, dtype=np.uint8),
-                            cv2.IMREAD_COLOR,
-                        )
-                        if frame is not None:
-                            with self._frame_lock:
-                                self._latest_frame = frame
-
-        except ConnectionRefusedError:
-            self._log(f"[远程Agent] 连接被拒绝 — 请确认远程服务已启动")
-        except Exception as e:
-            self._log(f"[远程Agent] 连接异常: {e}")
-        finally:
-            self._ws = None
-            self._connected = False
 
     def _log(self, msg: str):
         logger.info(msg)

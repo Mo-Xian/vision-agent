@@ -261,25 +261,29 @@ class WorkshopPanel(QWidget):
         remote_layout.setContentsMargins(0, 0, 0, 0)
         remote_layout.setSpacing(4)
 
-        host_row = QHBoxLayout()
-        host_row.addWidget(QLabel("地址"))
-        self.remote_host_input = QLineEdit()
-        self.remote_host_input.setPlaceholderText("远程 PC IP，如 192.168.1.100")
-        host_row.addWidget(self.remote_host_input, 1)
-        host_row.addWidget(QLabel(":"))
+        hub_row = QHBoxLayout()
+        hub_row.addWidget(QLabel("端口"))
         self.remote_port_spin = QSpinBox()
         self.remote_port_spin.setRange(1, 65535)
         self.remote_port_spin.setValue(9876)
         self.remote_port_spin.setMaximumWidth(70)
-        host_row.addWidget(self.remote_port_spin)
-        self.test_remote_btn = QPushButton("测试")
-        self.test_remote_btn.setObjectName("browseBtn")
-        self.test_remote_btn.setMaximumWidth(50)
-        self.test_remote_btn.clicked.connect(self._test_remote_connection)
-        host_row.addWidget(self.test_remote_btn)
-        remote_layout.addLayout(host_row)
+        hub_row.addWidget(self.remote_port_spin)
+        self.start_hub_btn = QPushButton("启动中转服务")
+        self.start_hub_btn.setObjectName("startBtn")
+        self.start_hub_btn.clicked.connect(self._start_hub)
+        hub_row.addWidget(self.start_hub_btn)
+        self.stop_hub_btn = QPushButton("停止")
+        self.stop_hub_btn.setObjectName("stopBtn")
+        self.stop_hub_btn.setMaximumWidth(50)
+        self.stop_hub_btn.setEnabled(False)
+        self.stop_hub_btn.clicked.connect(self._stop_hub)
+        hub_row.addWidget(self.stop_hub_btn)
+        remote_layout.addLayout(hub_row)
 
-        self.remote_status = QLabel("")
+        self.remote_status = QLabel(
+            "启动中转服务后，远程客户端连接此地址即可推送画面"
+        )
+        self.remote_status.setWordWrap(True)
         self.remote_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
         remote_layout.addWidget(self.remote_status)
 
@@ -559,8 +563,7 @@ class WorkshopPanel(QWidget):
             self._refresh_device_list()
         else:
             self.rec_info.setText(
-                "连接远程 PC 采集服务，实时录制。"
-                "需先在远程 PC 运行: python remote_capture_server.py"
+                "启动中转服务后，远程 PC 运行客户端连接即可录制。"
             )
 
     def is_mobile_source(self) -> bool:
@@ -569,36 +572,42 @@ class WorkshopPanel(QWidget):
     def is_remote_source(self) -> bool:
         return self.source_combo.currentIndex() == 2
 
-    def get_remote_config(self) -> tuple[str, int]:
-        """返回 (host, port)。"""
-        host = self.remote_host_input.text().strip()
-        port = self.remote_port_spin.value()
-        return host, port
+    def get_hub_port(self) -> int:
+        """返回中转服务端口。"""
+        return self.remote_port_spin.value()
 
-    def _test_remote_connection(self):
-        host, port = self.get_remote_config()
-        if not host:
-            self.remote_status.setText("请输入远程 PC 的 IP 地址")
-            self.remote_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
-            return
+    def get_hub(self):
+        """返回当前 RemoteHub 实例（未启动则返回 None）。"""
+        return getattr(self, '_remote_hub', None)
 
-        self.remote_status.setText("测试连接中...")
+    def _start_hub(self):
+        from ..data.remote_hub import RemoteHub
+        port = self.get_hub_port()
+        self._remote_hub = RemoteHub(
+            port=port,
+            on_log=lambda msg: self.remote_status.setText(msg.split("] ", 1)[-1]),
+        )
+        self._remote_hub.start()
+        local_ip = self._remote_hub.get_local_ip()
+        self.remote_status.setText(
+            f"中转服务已启动: ws://{local_ip}:{port}\n"
+            f"请在远程 PC 运行客户端连接此地址"
+        )
+        self.remote_status.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px;")
+        self.start_hub_btn.setEnabled(False)
+        self.stop_hub_btn.setEnabled(True)
+        self.remote_port_spin.setEnabled(False)
+
+    def _stop_hub(self):
+        hub = getattr(self, '_remote_hub', None)
+        if hub:
+            hub.stop()
+            self._remote_hub = None
+        self.remote_status.setText("中转服务已停止")
         self.remote_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        self.test_remote_btn.setEnabled(False)
-
-        import threading
-
-        def _test():
-            from ..data.remote_recorder import RemoteRecorder
-            ok, msg = RemoteRecorder.test_connection(host, port, timeout=5)
-            from PySide6.QtCore import QMetaObject, Qt as _Qt, Q_ARG
-            color = COLORS['accent'] if ok else COLORS['error']
-            # 使用 signal 更新 UI
-            self.remote_status.setText(msg)
-            self.remote_status.setStyleSheet(f"color: {color}; font-size: 11px;")
-            self.test_remote_btn.setEnabled(True)
-
-        threading.Thread(target=_test, daemon=True).start()
+        self.start_hub_btn.setEnabled(True)
+        self.stop_hub_btn.setEnabled(False)
+        self.remote_port_spin.setEnabled(True)
 
     def get_mobile_device(self) -> str:
         data = self.mobile_device_combo.currentData()
