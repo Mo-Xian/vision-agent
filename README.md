@@ -7,7 +7,7 @@
 
 **端到端行为克隆 + RL 自学习框架，用于游戏 AI 和桌面自动化。**
 
-录制人类操作 → 行为克隆训练 → 伪标签扩展 → RL 自对弈，全流程 GUI 可视化。支持 PC（窗口捕获 + 键鼠）和手机（scrcpy + ADB 触控）。
+录制人类操作 → 行为克隆训练 → 伪标签扩展 → RL 自对弈，全流程 GUI 可视化。支持 PC（窗口捕获 + 键鼠）、手机（scrcpy + ADB 触控）和远程 PC（局域网 WebSocket）。
 
 > **核心思路**：看人怎么玩 → 模仿学会 → 自己练习变强。从零开始，不需要手写规则。
 
@@ -120,6 +120,12 @@ python main.py record --window "王者荣耀"
 python main.py mobile --check                        # 检查环境
 python main.py mobile --game moba                    # MOBA 预设
 
+# 远程 PC 录制（局域网跨 PC）
+python main.py serve                                 # 远程 PC: 启动采集服务
+python main.py serve --window "王者荣耀" --fps 15    # 远程 PC: 指定窗口
+python main.py remote 192.168.1.100                  # 本机: 连接并录制
+python main.py remote 192.168.1.100 --test           # 本机: 测试连接
+
 # 行为克隆训练
 python main.py learn-bc recordings/session1 recordings/session2
 
@@ -164,7 +170,7 @@ git push origin v1.0.0
 | 模式 | 用途 | 核心操作 |
 |------|------|----------|
 | **训练工坊** | 数据录制、BC 训练、自主改进循环、RL 就绪 | 选窗口录制、一键学习、配置视频源、实时训练曲线 |
-| **Agent 部署** | 连接手机设备、加载模型、Agent 接管 | 刷新设备、选择模型、Agent 接管/停止 |
+| **Agent 部署** | 连接手机/PC/远程PC、加载模型、Agent 接管 | 选择目标、选择模型、Agent 接管/停止 |
 | **LLM 设置** | LLM 连接配置 | 选择供应商/模型、填写 API Key、测试连接 |
 
 ---

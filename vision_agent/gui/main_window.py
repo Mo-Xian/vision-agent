@@ -528,6 +528,8 @@ class MainWindow(QMainWindow):
         preset_name = sp.get_preset_name()
         is_mobile = sp.is_mobile_target()
 
+        is_remote = sp.is_remote_target()
+
         if is_mobile:
             device_serial = sp.get_device_serial()
         else:
@@ -541,7 +543,13 @@ class MainWindow(QMainWindow):
                 from ..rl.preset import load_selfplay_preset
                 preset = load_selfplay_preset(preset_name)
 
-                if is_mobile:
+                if is_remote:
+                    host, port = sp.get_remote_agent_config()
+                    if not host:
+                        self._selfplay_log.emit("[Agent 错误] 请输入远程 PC 地址")
+                        return
+                    self._run_agent_remote(model_dir, preset, host, port)
+                elif is_mobile:
                     self._run_agent_mobile(model_dir, preset, device_serial)
                 else:
                     window_title = sp.get_window_title()
@@ -662,6 +670,79 @@ class MainWindow(QMainWindow):
                         except Exception as e:
                             logger.debug(f"按键执行失败: {e}")
             time.sleep(0.2)
+
+    def _run_agent_remote(self, model_dir: str, preset: dict, host: str, port: int):
+        """远程 PC Agent：WebSocket 获取画面 + 发送操控指令。"""
+        from ..data.remote_recorder import RemoteAgentConnection
+        from ..decision.e2e_engine import E2EEngine
+
+        # 建立远程连接
+        conn = RemoteAgentConnection(
+            host, port,
+            on_log=lambda msg: self._selfplay_log.emit(msg),
+        )
+        conn.start()
+
+        # 等待连接
+        import time
+        for _ in range(20):
+            if conn.is_connected:
+                break
+            time.sleep(0.5)
+        if not conn.is_connected:
+            self._selfplay_log.emit("[Agent] 无法连接远程 PC，请检查地址和采集服务")
+            conn.stop()
+            return
+
+        # 加载决策引擎
+        model_type = self._detect_model_type(model_dir)
+        if model_type == "e2e_mlp":
+            engine = E2EEngine(model_dir=model_dir)
+            engine_label = "BC (E2E)"
+        else:
+            from ..decision.dqn_engine import DQNEngine
+            engine = DQNEngine(
+                model_dir=model_dir,
+                touch_zones=preset.get("action_zones", []),
+                execute_actions=False,  # 不本地执行，通过远程发送
+            )
+            engine_label = "DQN"
+        engine.on_start()
+        self._dqn_engine = engine
+
+        self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir} ({engine_label})")
+        self._selfplay_log.emit(f"[Agent] 远程模式: {host}:{port} → 画面获取 + 操控指令")
+
+        # Agent 循环
+        action_key_map = preset.get("action_key_map", {})
+        try:
+            while self._agent_running:
+                frame = conn.get_frame()
+                if frame is None:
+                    time.sleep(0.2)
+                    continue
+
+                self._selfplay_frame.emit(frame)
+                actions = engine.decide(embedding=frame)
+
+                if actions:
+                    action = actions[0]
+                    if action.name != "idle":
+                        self._selfplay_log.emit(
+                            f"[Agent] {action.name} (conf={action.confidence:.2f})"
+                        )
+                        # 发送操控指令到远程 PC
+                        key_info = action_key_map.get(action.name, {})
+                        key = key_info.get("key", "") if isinstance(key_info, dict) else ""
+                        if not key:
+                            key = action.parameters.get("key", "") if action.parameters else ""
+                        if key:
+                            conn.send_key_tap(key)
+
+                time.sleep(0.2)
+        finally:
+            conn.stop()
+            engine.on_stop()
 
     @Slot()
     def _stop_agent(self):

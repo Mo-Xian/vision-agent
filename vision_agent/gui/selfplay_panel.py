@@ -57,7 +57,11 @@ class SelfPlayPanel(QWidget):
         target_row = QHBoxLayout()
         target_row.addWidget(QLabel("目标"))
         self.target_combo = QComboBox()
-        self.target_combo.addItems(["手机（scrcpy + ADB 触控）", "PC（窗口捕获 + 键鼠）"])
+        self.target_combo.addItems([
+            "手机（scrcpy + ADB 触控）",
+            "PC（窗口捕获 + 键鼠）",
+            "远程 PC（WebSocket 连接）",
+        ])
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         target_row.addWidget(self.target_combo, 1)
         tg.addLayout(target_row)
@@ -119,6 +123,41 @@ class SelfPlayPanel(QWidget):
 
         tg.addWidget(self.pc_target_widget)
         self.pc_target_widget.setVisible(False)
+
+        # -- 远程 PC 控件 --
+        self.remote_target_widget = QWidget()
+        rem_layout = QVBoxLayout(self.remote_target_widget)
+        rem_layout.setContentsMargins(0, 0, 0, 0)
+        rem_layout.setSpacing(4)
+
+        rhost_row = QHBoxLayout()
+        rhost_row.addWidget(QLabel("地址"))
+        self.remote_agent_host = QLineEdit()
+        self.remote_agent_host.setPlaceholderText("远程 PC IP，如 192.168.1.100")
+        rhost_row.addWidget(self.remote_agent_host, 1)
+        rhost_row.addWidget(QLabel(":"))
+        self.remote_agent_port = QComboBox()
+        self.remote_agent_port.setEditable(True)
+        self.remote_agent_port.addItem("9876")
+        self.remote_agent_port.setMaximumWidth(70)
+        rhost_row.addWidget(self.remote_agent_port)
+        self.test_remote_agent_btn = QPushButton("测试")
+        self.test_remote_agent_btn.setObjectName("browseBtn")
+        self.test_remote_agent_btn.setMaximumWidth(50)
+        self.test_remote_agent_btn.clicked.connect(self._test_remote_agent)
+        rhost_row.addWidget(self.test_remote_agent_btn)
+        rem_layout.addLayout(rhost_row)
+
+        self.remote_agent_status = QLabel(
+            "Agent 将通过 WebSocket 获取远程画面并发送操控指令"
+        )
+        self.remote_agent_status.setStyleSheet(
+            f"color: {COLORS['text_dim']}; font-size: 11px;"
+        )
+        rem_layout.addWidget(self.remote_agent_status)
+
+        tg.addWidget(self.remote_target_widget)
+        self.remote_target_widget.setVisible(False)
 
         left_layout.addWidget(target_group)
 
@@ -250,16 +289,50 @@ class SelfPlayPanel(QWidget):
     # ── 部署目标切换 ──
 
     def _on_target_changed(self, index: int):
-        is_mobile = (index == 0)
-        self.mobile_target_widget.setVisible(is_mobile)
-        self.pc_target_widget.setVisible(not is_mobile)
-        if is_mobile:
+        self.mobile_target_widget.setVisible(index == 0)
+        self.pc_target_widget.setVisible(index == 1)
+        self.remote_target_widget.setVisible(index == 2)
+        if index == 0:
             self._refresh_devices()
-        else:
+        elif index == 1:
             self._refresh_window_list()
 
     def is_mobile_target(self) -> bool:
         return self.target_combo.currentIndex() == 0
+
+    def is_remote_target(self) -> bool:
+        return self.target_combo.currentIndex() == 2
+
+    def get_remote_agent_config(self) -> tuple[str, int]:
+        host = self.remote_agent_host.text().strip()
+        port = int(self.remote_agent_port.currentText().strip() or "9876")
+        return host, port
+
+    def _test_remote_agent(self):
+        host, port = self.get_remote_agent_config()
+        if not host:
+            self.remote_agent_status.setText("请输入远程 PC 的 IP 地址")
+            self.remote_agent_status.setStyleSheet(
+                f"color: {COLORS['danger']}; font-size: 11px;"
+            )
+            return
+
+        self.remote_agent_status.setText("测试连接中...")
+        self.test_remote_agent_btn.setEnabled(False)
+
+        import threading as _th
+
+        def _test():
+            from ..data.remote_recorder import RemoteRecorder
+            ok, msg = RemoteRecorder.test_connection(host, port, timeout=5)
+            color = COLORS['success'] if ok else COLORS['danger']
+            self.remote_agent_status.setText(msg)
+            self.remote_agent_status.setStyleSheet(
+                f"color: {color}; font-size: 11px;"
+            )
+            self.test_remote_agent_btn.setEnabled(True)
+
+        _th.Thread(target=_test, daemon=True).start()
 
     def get_window_title(self) -> str:
         text = self.window_combo.currentText()

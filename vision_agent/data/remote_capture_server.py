@@ -132,17 +132,81 @@ class RemoteCaptureServer:
         self._client_connected.set()
 
         try:
-            while True:
-                msg_type, data = await self._send_queue.get()
-                if msg_type == "frame":
-                    await websocket.send(data)
-                else:
-                    await websocket.send(data)
+            # 双向：发送帧/事件 + 接收控制指令
+            send_task = asyncio.create_task(self._send_loop(websocket))
+            recv_task = asyncio.create_task(self._recv_loop(websocket))
+            done, pending = await asyncio.wait(
+                [send_task, recv_task], return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
         except Exception as e:
             print(f"[采集服务] 客户端断开: {e}")
         finally:
             self._client_connected.clear()
             self._active_client = None
+
+    async def _send_loop(self, websocket):
+        """持续发送帧和事件。"""
+        while True:
+            msg_type, data = await self._send_queue.get()
+            await websocket.send(data)
+
+    async def _recv_loop(self, websocket):
+        """接收客户端的控制指令（Agent 远程操控）。
+
+        支持的指令:
+            {"cmd":"key_press",   "key":"a"}
+            {"cmd":"key_release", "key":"a"}
+            {"cmd":"key_tap",     "key":"a"}
+            {"cmd":"mouse_click", "x":100, "y":200, "button":"left"}
+            {"cmd":"mouse_move",  "x":100, "y":200}
+        """
+        async for msg in websocket:
+            if not isinstance(msg, str):
+                continue
+            try:
+                data = json.loads(msg)
+                cmd = data.get("cmd", "")
+                if cmd:
+                    self._execute_control(data)
+            except Exception as e:
+                print(f"[采集服务] 控制指令错误: {e}")
+
+    def _execute_control(self, data: dict):
+        """在远程 PC 上执行控制指令。"""
+        cmd = data["cmd"]
+        try:
+            if cmd in ("key_press", "key_release", "key_tap"):
+                from pynput.keyboard import Controller, Key
+                kb = Controller()
+                key_name = data.get("key", "")
+                # 尝试解析特殊键（如 space, enter, tab）
+                key = getattr(Key, key_name, None) or key_name
+                if cmd == "key_press":
+                    kb.press(key)
+                elif cmd == "key_release":
+                    kb.release(key)
+                else:  # key_tap
+                    kb.press(key)
+                    kb.release(key)
+
+            elif cmd == "mouse_click":
+                from pynput.mouse import Controller, Button
+                ms = Controller()
+                x, y = int(data.get("x", 0)), int(data.get("y", 0))
+                btn_name = data.get("button", "left")
+                btn = getattr(Button, btn_name, Button.left)
+                ms.position = (x, y)
+                ms.click(btn)
+
+            elif cmd == "mouse_move":
+                from pynput.mouse import Controller
+                ms = Controller()
+                ms.position = (int(data.get("x", 0)), int(data.get("y", 0)))
+
+        except Exception as e:
+            print(f"[采集服务] 执行控制失败: {cmd} → {e}")
 
     def _enqueue(self, msg_type: str, data):
         """线程安全地将消息放入发送队列。"""

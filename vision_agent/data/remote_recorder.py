@@ -412,3 +412,148 @@ class RemoteRecorder:
             return False, f"网络错误: {e}"
         except Exception as e:
             return False, str(e)
+
+
+class RemoteAgentConnection:
+    """Agent 远程控制连接 — 接收画面 + 发送操作指令。
+
+    用于 Agent 部署模式：连接远程采集服务，获取游戏画面用于决策，
+    并将决策结果（键鼠操作）发回远程 PC 执行。
+
+    用法:
+        conn = RemoteAgentConnection("192.168.1.100", 9876)
+        conn.start()
+        frame = conn.get_frame()        # 获取最新画面
+        conn.send_key_tap("a")          # 远程按键
+        conn.send_mouse_click(100, 200) # 远程点击
+        conn.stop()
+    """
+
+    def __init__(self, host: str, port: int, on_log=None):
+        self._host = host
+        self._port = port
+        self._on_log = on_log
+        self._ws = None
+        self._connected = False
+        self._running = False
+        self._stop_event = threading.Event()
+        self._receive_thread = None
+        self._latest_frame = None
+        self._frame_lock = threading.Lock()
+        self._remote_meta: dict = {}
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        return (self._remote_meta.get("width", 0), self._remote_meta.get("height", 0))
+
+    def start(self):
+        """连接远程采集服务。"""
+        self._running = True
+        self._stop_event.clear()
+        self._receive_thread = threading.Thread(
+            target=self._receive_loop, daemon=True
+        )
+        self._receive_thread.start()
+
+    def stop(self):
+        """断开连接。"""
+        self._running = False
+        self._stop_event.set()
+        if self._receive_thread:
+            self._receive_thread.join(timeout=5)
+        self._connected = False
+
+    def get_frame(self) -> np.ndarray | None:
+        """获取最新一帧画面（BGR numpy array）。"""
+        with self._frame_lock:
+            return self._latest_frame
+
+    def send_key_tap(self, key: str):
+        """远程按键（按下+释放）。"""
+        self._send_cmd({"cmd": "key_tap", "key": key})
+
+    def send_key_press(self, key: str):
+        """远程按下键。"""
+        self._send_cmd({"cmd": "key_press", "key": key})
+
+    def send_key_release(self, key: str):
+        """远程释放键。"""
+        self._send_cmd({"cmd": "key_release", "key": key})
+
+    def send_mouse_click(self, x: int, y: int, button: str = "left"):
+        """远程鼠标点击。"""
+        self._send_cmd({"cmd": "mouse_click", "x": x, "y": y, "button": button})
+
+    def send_mouse_move(self, x: int, y: int):
+        """远程鼠标移动。"""
+        self._send_cmd({"cmd": "mouse_move", "x": x, "y": y})
+
+    def _send_cmd(self, data: dict):
+        if self._ws and self._connected:
+            try:
+                self._ws.send(json.dumps(data))
+            except Exception as e:
+                logger.debug(f"发送控制指令失败: {e}")
+
+    def _receive_loop(self):
+        try:
+            from websockets.sync.client import connect
+        except ImportError:
+            self._log("[远程Agent] websockets 未安装")
+            return
+
+        uri = f"ws://{self._host}:{self._port}"
+        try:
+            with connect(uri, max_size=10_000_000, open_timeout=10) as ws:
+                self._ws = ws
+                self._connected = True
+                self._log(f"[远程Agent] 已连接 {uri}")
+
+                while not self._stop_event.is_set():
+                    try:
+                        msg = ws.recv(timeout=1)
+                    except TimeoutError:
+                        continue
+                    except Exception:
+                        break
+
+                    if isinstance(msg, str):
+                        data = json.loads(msg)
+                        if data.get("type") == "meta":
+                            self._remote_meta = data
+                            self._log(
+                                f"[远程Agent] 画面: "
+                                f"{data.get('width')}x{data.get('height')} "
+                                f"FPS={data.get('fps')}"
+                            )
+                    else:
+                        if len(msg) < 9:
+                            continue
+                        jpeg_bytes = msg[8:]
+                        frame = cv2.imdecode(
+                            np.frombuffer(jpeg_bytes, dtype=np.uint8),
+                            cv2.IMREAD_COLOR,
+                        )
+                        if frame is not None:
+                            with self._frame_lock:
+                                self._latest_frame = frame
+
+        except ConnectionRefusedError:
+            self._log(f"[远程Agent] 连接被拒绝 — 请确认远程服务已启动")
+        except Exception as e:
+            self._log(f"[远程Agent] 连接异常: {e}")
+        finally:
+            self._ws = None
+            self._connected = False
+
+    def _log(self, msg: str):
+        logger.info(msg)
+        if self._on_log:
+            try:
+                self._on_log(msg)
+            except Exception:
+                pass
