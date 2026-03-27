@@ -181,15 +181,28 @@ class WorkshopPanel(QWidget):
 
         rec_layout = src_layout
 
-        rec_info = QLabel(
-            "录制你的游戏操作（屏幕 + 键鼠），自动生成训练数据。\n"
-            "F9 暂停/恢复录制。支持窗口捕获和鼠标操作录制。"
-        )
-        rec_info.setWordWrap(True)
-        rec_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        rec_layout.addWidget(rec_info)
+        # 录制源切换
+        source_row = QHBoxLayout()
+        source_row.addWidget(QLabel("录制源"))
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(["PC（窗口捕获 + 键鼠）", "手机（scrcpy + ADB 触控）"])
+        self.source_combo.currentIndexChanged.connect(self._on_source_changed)
+        source_row.addWidget(self.source_combo, 1)
+        rec_layout.addLayout(source_row)
 
-        # 窗口选择
+        self.rec_info = QLabel(
+            "录制你的游戏操作，自动生成训练数据。F9 暂停/恢复。"
+        )
+        self.rec_info.setWordWrap(True)
+        self.rec_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        rec_layout.addWidget(self.rec_info)
+
+        # -- PC 模式控件 --
+        self.pc_source_widget = QWidget()
+        pc_layout = QVBoxLayout(self.pc_source_widget)
+        pc_layout.setContentsMargins(0, 0, 0, 0)
+        pc_layout.setSpacing(4)
+
         win_row = QHBoxLayout()
         win_row.addWidget(QLabel("窗口"))
         self.window_combo = QComboBox()
@@ -202,7 +215,41 @@ class WorkshopPanel(QWidget):
         self.refresh_windows_btn.setMaximumWidth(50)
         self.refresh_windows_btn.clicked.connect(self._refresh_window_list)
         win_row.addWidget(self.refresh_windows_btn)
-        rec_layout.addLayout(win_row)
+        pc_layout.addLayout(win_row)
+        rec_layout.addWidget(self.pc_source_widget)
+
+        # -- 手机模式控件 --
+        self.mobile_source_widget = QWidget()
+        mob_layout = QVBoxLayout(self.mobile_source_widget)
+        mob_layout.setContentsMargins(0, 0, 0, 0)
+        mob_layout.setSpacing(4)
+
+        dev_row = QHBoxLayout()
+        dev_row.addWidget(QLabel("设备"))
+        self.mobile_device_combo = QComboBox()
+        self.mobile_device_combo.setEditable(True)
+        self.mobile_device_combo.setPlaceholderText("自动检测或输入序列号")
+        dev_row.addWidget(self.mobile_device_combo, 1)
+        self.refresh_devices_btn = QPushButton("刷新")
+        self.refresh_devices_btn.setObjectName("browseBtn")
+        self.refresh_devices_btn.setMaximumWidth(50)
+        self.refresh_devices_btn.clicked.connect(self._refresh_device_list)
+        dev_row.addWidget(self.refresh_devices_btn)
+        mob_layout.addLayout(dev_row)
+
+        zone_row = QHBoxLayout()
+        zone_row.addWidget(QLabel("触控预设"))
+        self.touch_zone_combo = QComboBox()
+        self.touch_zone_combo.addItems(["moba - MOBA 手游", "fps - FPS 手游", "无 - 自动检测"])
+        zone_row.addWidget(self.touch_zone_combo, 1)
+        mob_layout.addLayout(zone_row)
+
+        self.mobile_status = QLabel("")
+        self.mobile_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        mob_layout.addWidget(self.mobile_status)
+
+        rec_layout.addWidget(self.mobile_source_widget)
+        self.mobile_source_widget.setVisible(False)
 
         rec_btn_row = QHBoxLayout()
         self.record_start_btn = QPushButton("开始录制")
@@ -409,6 +456,54 @@ class WorkshopPanel(QWidget):
         text = self.sp_preset_combo.currentText()
         preset_name = text.split(" - ")[0].strip()
         return {"preset": preset_name}
+
+    # ── 录制源切换 ──
+
+    def _on_source_changed(self, index: int):
+        is_mobile = (index == 1)
+        self.pc_source_widget.setVisible(not is_mobile)
+        self.mobile_source_widget.setVisible(is_mobile)
+        if is_mobile:
+            self.rec_info.setText("录制手机游戏操作（scrcpy 投屏 + ADB 触摸采集）。需要 USB 调试。")
+            self._refresh_device_list()
+        else:
+            self.rec_info.setText("录制你的游戏操作，自动生成训练数据。F9 暂停/恢复。")
+
+    def is_mobile_source(self) -> bool:
+        return self.source_combo.currentIndex() == 1
+
+    def get_mobile_device(self) -> str:
+        data = self.mobile_device_combo.currentData()
+        if data:
+            return data
+        return self.mobile_device_combo.currentText().strip()
+
+    def get_touch_zone_preset(self) -> str:
+        text = self.touch_zone_combo.currentText()
+        preset = text.split(" - ")[0].strip()
+        return "" if preset == "无" else preset
+
+    def _refresh_device_list(self):
+        self.mobile_device_combo.clear()
+        try:
+            import subprocess
+            r = subprocess.run(
+                ["adb", "devices", "-l"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in r.stdout.strip().split("\n")[1:]:
+                if not line.strip() or "device" not in line:
+                    continue
+                parts = line.split()
+                serial = parts[0]
+                info = " ".join(parts[2:]) if len(parts) > 2 else ""
+                self.mobile_device_combo.addItem(f"{serial} ({info})" if info else serial, serial)
+            count = self.mobile_device_combo.count()
+            self.mobile_status.setText(f"检测到 {count} 个设备" if count else "未检测到设备，请检查 USB 连接")
+        except FileNotFoundError:
+            self.mobile_status.setText("未找到 adb，请安装 Android SDK Platform Tools")
+        except Exception as e:
+            self.mobile_status.setText(f"检测失败: {e}")
 
     # ── 窗口管理 ──
 

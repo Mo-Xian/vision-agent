@@ -292,19 +292,38 @@ class MainWindow(QMainWindow):
         else:
             rec_dir = f"recordings/{_time.strftime('%Y%m%d_%H%M%S')}"
 
-        from ..data.game_recorder import GameRecorder
-        window_title = wp.get_window_title()
-        self._recorder = GameRecorder(
-            output_dir=rec_dir,
-            fps=10,
-            window_title=window_title,
-            record_mouse=True,
-            on_log=lambda msg: self._learn_log.emit(msg),
-        )
-        self._recorder.start()
-        wp.set_recording_state(True)
-        window_info = f" (窗口: {window_title})" if window_title else " (全屏)"
-        self._log(f"[录制] 开始录制{window_info}，F9 暂停/恢复...")
+        if wp.is_mobile_source():
+            # 手机录制
+            from ..data.mobile_recorder import MobileRecorder
+            device = wp.get_mobile_device()
+            zone_preset = wp.get_touch_zone_preset()
+            touch_zones = MobileRecorder.create_default_zones(zone_preset) if zone_preset else None
+
+            self._recorder = MobileRecorder(
+                output_dir=rec_dir,
+                fps=10,
+                touch_zones=touch_zones,
+                adb_device=device,
+                on_log=lambda msg: self._learn_log.emit(msg),
+            )
+            self._recorder.start()
+            wp.set_recording_state(True)
+            self._log(f"[录制] 手机录制开始 (设备: {device or '自动'})...")
+        else:
+            # PC 录制
+            from ..data.game_recorder import GameRecorder
+            window_title = wp.get_window_title()
+            self._recorder = GameRecorder(
+                output_dir=rec_dir,
+                fps=10,
+                window_title=window_title,
+                record_mouse=True,
+                on_log=lambda msg: self._learn_log.emit(msg),
+            )
+            self._recorder.start()
+            wp.set_recording_state(True)
+            window_info = f" (窗口: {window_title})" if window_title else " (全屏)"
+            self._log(f"[录制] PC 录制开始{window_info}，F9 暂停/恢复...")
 
     @Slot()
     def _stop_recording(self):
@@ -320,11 +339,13 @@ class MainWindow(QMainWindow):
         def _save():
             try:
                 stats = recorder.stop()
+                # 兼容 PC (GameRecordingStats) 和手机 (MobileRecordingStats)
+                total_events = getattr(stats, "total_events", 0) or getattr(stats, "total_touch_events", 0)
                 self._recording_done.emit(
                     stats.output_dir,
                     {
                         "total_frames": stats.total_frames,
-                        "total_events": stats.total_events,
+                        "total_events": total_events,
                         "duration_sec": stats.duration_sec,
                         "action_dist": stats.action_dist,
                     },
