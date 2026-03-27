@@ -338,7 +338,7 @@ class WorkshopPanel(QWidget):
 
         # ━━━ 核心操作 ━━━
         learn_hint = QLabel(
-            "自动编排：检测输入 → 行为克隆 → 技能分析 → 在线搜索 → 伪标签扩展 → RL 就绪"
+            "自动编排：检测输入 → 行为克隆 → 自主改进循环(搜索视频→伪标签→重训练) → RL 蒸馏"
         )
         learn_hint.setWordWrap(True)
         learn_hint.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
@@ -438,6 +438,15 @@ class WorkshopPanel(QWidget):
         self.sp_preset_combo.addItems(["wzry - 王者荣耀", "fps - FPS 射击", "generic - 通用"])
         train_form.addRow("RL 游戏预设", self.sp_preset_combo)
 
+        self.selfplay_episodes_spin = QSpinBox()
+        self.selfplay_episodes_spin.setRange(0, 10000)
+        self.selfplay_episodes_spin.setValue(0)
+        self.selfplay_episodes_spin.setToolTip(
+            "0 = 不执行 RL 自对弈。设为 >0 时，训练完 BC 后自动进入 RL 自对弈阶段，\n"
+            "高奖励经验会蒸馏回 BC 模型。需要连接手机设备。"
+        )
+        train_form.addRow("RL 自对弈局数", self.selfplay_episodes_spin)
+
         self.improve_rounds_spin = QSpinBox()
         self.improve_rounds_spin.setRange(0, 10)
         self.improve_rounds_spin.setValue(3)
@@ -486,7 +495,10 @@ class WorkshopPanel(QWidget):
         """获取 RL 预设配置（统一管线使用）。"""
         text = self.sp_preset_combo.currentText()
         preset_name = text.split(" - ")[0].strip()
-        return {"preset": preset_name}
+        return {
+            "preset": preset_name,
+            "max_episodes": self.selfplay_episodes_spin.value(),
+        }
 
     def get_video_source_config(self) -> dict:
         """获取自主学习视频源配置。"""

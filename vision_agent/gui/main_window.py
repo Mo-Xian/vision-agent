@@ -216,10 +216,16 @@ class MainWindow(QMainWindow):
     def _on_learn_progress(self, phase: str, pct: float):
         wp = self.workshop_panel
         phase_labels = {
+            "detecting_input": "检测输入",
             "discover": "动作发现",
             "train": "训练模型",
             "expand": "伪标签扩展",
-            "rl": "强化学习", "done": "完成",
+            "self_study": "自主改进",
+            "searching_videos": "搜索视频",
+            "asking_coach": "教练分析",
+            "practice": "RL 自对弈",
+            "rl": "强化学习",
+            "done": "完成",
         }
         label = phase_labels.get(phase, phase)
         wp.progress_bar.setValue(int(pct * 100))
@@ -264,24 +270,28 @@ class MainWindow(QMainWindow):
                     f"  - {s}" for s in coach["suggestions"][:3]
                 )
 
-            # 检查是否有 RL 就绪配置
-            rl_ready = coach.get("rl_ready")
-            rl_hint = ""
-            if rl_ready:
-                rl_hint = "\n\nRL 自对弈已就绪，是否切换到 Agent 部署启动？"
+            # 检查蒸馏结果
+            distill = result.get("distill_result", {})
+            distill_hint = ""
+            if distill.get("distilled_samples"):
+                distill_hint = (
+                    f"\n\nRL 蒸馏: {distill['distilled_samples']} 条经验 "
+                    f"→ 精度 {distill.get('new_val_acc', 0):.1%}"
+                )
 
-            reply = QMessageBox.information(
+            deploy_hint = "\n\n是否切换到 Agent 部署？"
+
+            reply = QMessageBox.question(
                 self, "学习完成",
                 f"模型: {result['model_dir']}\n"
                 f"Profile: {result.get('profile_path', 'N/A')}"
                 f"{advice_text}"
-                f"{rl_hint}\n\n"
-                f"使用 eval_model.py 评估模型效果。",
-                QMessageBox.Ok | (QMessageBox.Yes if rl_ready else QMessageBox.Ok),
+                f"{distill_hint}"
+                f"{deploy_hint}",
+                QMessageBox.Yes | QMessageBox.No,
             )
 
-            # 如果用户确认且有 RL 配置，自动切换到 Agent 部署并填入模型
-            if rl_ready and reply == QMessageBox.Yes:
+            if reply == QMessageBox.Yes:
                 sp = self.selfplay_panel
                 sp.set_model_dir(result["model_dir"])
                 self._switch_mode("selfplay")
@@ -445,7 +455,7 @@ class MainWindow(QMainWindow):
             "knowledge": wp.knowledge_input.toPlainText().strip(),
             "device_serial": device_serial,
             "selfplay_preset": sp_config.get("preset", ""),
-            "selfplay_episodes": sp_config.get("max_episodes", 0),
+            "selfplay_episodes": sp_config.get("max_episodes", 0),  # from selfplay_episodes_spin
             "video_sources": vs_config.get("video_sources", []),
             "max_improve_rounds": vs_config.get("max_improve_rounds", 3),
             "max_videos_per_round": vs_config.get("max_videos_per_round", 5),
@@ -496,7 +506,7 @@ class MainWindow(QMainWindow):
         sp = self.selfplay_panel
         model_dir = sp.get_agent_model_dir()
         if not model_dir:
-            QMessageBox.warning(self, "提示", "请选择模型目录（DQN 或 BC 训练产出）")
+            QMessageBox.warning(self, "提示", "请选择模型目录（训练产出）")
             return
 
         preset_name = sp.get_preset_name()
@@ -536,18 +546,26 @@ class MainWindow(QMainWindow):
         self._log(f"[Agent] 启动中 ({target_info})...")
 
     def _run_agent_mobile(self, model_dir: str, preset: dict, device_serial: str):
-        """手机端 Agent：scrcpy 截屏 + ADB 触控。"""
-        from ..decision.dqn_engine import DQNEngine
+        """手机端 Agent：scrcpy 截屏 + ADB 触控。自动检测模型类型。"""
+        # 检测模型类型
+        model_type = self._detect_model_type(model_dir)
 
-        self._dqn_engine = DQNEngine(
-            model_dir=model_dir,
-            touch_zones=preset.get("action_zones", []),
-            device_serial=device_serial,
-            execute_actions=True,
-        )
+        if model_type == "e2e_mlp":
+            from ..decision.e2e_engine import E2EEngine
+            self._dqn_engine = E2EEngine(model_dir=model_dir)
+            engine_label = "BC (E2E)"
+        else:
+            from ..decision.dqn_engine import DQNEngine
+            self._dqn_engine = DQNEngine(
+                model_dir=model_dir,
+                touch_zones=preset.get("action_zones", []),
+                device_serial=device_serial,
+                execute_actions=True,
+            )
+            engine_label = "DQN"
         self._dqn_engine.on_start()
 
-        self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir}")
+        self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir} ({engine_label})")
         self._selfplay_log.emit("[Agent] 手机模式：scrcpy 截屏 + ADB 触控")
 
         import time
@@ -637,6 +655,18 @@ class MainWindow(QMainWindow):
     def _start_agent_frame_capture(self):
         """Agent 模式的帧捕获（复用 scrcpy 窗口）。"""
         pass  # Agent 循环内直接发送帧，无需额外定时器
+
+    @staticmethod
+    def _detect_model_type(model_dir: str) -> str:
+        """读取 model.meta.json 检测模型类型，默认 e2e_mlp。"""
+        meta_path = Path(model_dir) / "model.meta.json"
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                return meta.get("model_type", "e2e_mlp")
+            except Exception:
+                pass
+        return "e2e_mlp"
 
     def _capture_scrcpy_frame(self):
         """从 scrcpy 窗口截取一帧。"""

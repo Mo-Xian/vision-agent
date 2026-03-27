@@ -53,6 +53,15 @@ class UnifiedResult:
     success: bool = False
 
     def to_dict(self) -> dict:
+        # 从 phase_history 提取蒸馏结果
+        distill_result = {}
+        for ph in self.phase_history:
+            if ph.get("phase") == "practice" and ph.get("distilled_samples"):
+                distill_result = {
+                    "distilled_samples": ph["distilled_samples"],
+                    "rl_episodes": ph.get("rl_episodes", 0),
+                    "new_val_acc": ph.get("metrics", {}).get("best_val_acc", 0),
+                }
         return {
             "run_dir": self.run_dir,
             "phase_history": self.phase_history,
@@ -62,6 +71,7 @@ class UnifiedResult:
             "human_review_items": self.human_review_items,
             "coach_advice": self.coach_advice,
             "success": self.success,
+            "distill_result": distill_result,
         }
 
 

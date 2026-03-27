@@ -153,7 +153,7 @@ class SelfPlayPanel(QWidget):
         ag.setSpacing(4)
 
         agent_info = QLabel(
-            "选择训练好的模型（BC 或 DQN），Agent 将根据模型决策自动操控游戏。"
+            "选择训练好的模型，Agent 将根据模型决策自动操控游戏（自动检测模型类型）。"
         )
         agent_info.setWordWrap(True)
         agent_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
