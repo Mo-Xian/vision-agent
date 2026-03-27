@@ -375,7 +375,7 @@ class MainWindow(QMainWindow):
         wp.train_chart.clear()
         wp.train_chart.setVisible(True)
 
-        from ..workshop.learning_pipeline import LearningPipeline
+        from ..workshop.unified_pipeline import UnifiedPipeline
 
         output_dir = "runs/workshop"
         if wp.current_scene:
@@ -384,27 +384,34 @@ class MainWindow(QMainWindow):
             wp.current_scene.status = "training"
             wp.current_scene.save()
 
-        self._learner = LearningPipeline(
+        # 获取自对弈配置（如果有设备连接）
+        device_serial = self.selfplay_panel.get_device_serial()
+        sp_config = wp.get_selfplay_config()
+
+        self._learner = UnifiedPipeline(
             llm_provider_name=provider_name,
             llm_api_key=api_key,
             llm_model=self.llm_panel.llm_model_combo.currentText(),
             llm_base_url=self.llm_panel.llm_base_url.text().strip(),
             output_dir=output_dir,
             on_log=lambda msg: self._learn_log.emit(msg),
-            on_progress=lambda phase, pct: self._learn_progress.emit(phase, pct),
+            on_progress=lambda phase, pct, detail="": self._learn_progress.emit(phase, pct),
+            on_phase_change=lambda phase: self._learn_log.emit(f"[阶段] → {phase}"),
         )
 
         kwargs = {
             "recording_dirs": recording_dirs,
             "description": wp.description_input.text().strip(),
             "epochs": wp.epochs_spin.value(),
-            "rl_steps": wp.rl_steps_spin.value(),
             "knowledge": wp.knowledge_input.toPlainText().strip(),
+            "device_serial": device_serial,
+            "selfplay_preset": sp_config.get("preset", ""),
+            "selfplay_episodes": sp_config.get("max_episodes", 0),
         }
 
         def _run():
             try:
-                result = self._learner.learn_from_recordings(**kwargs)
+                result = self._learner.run(**kwargs)
                 self._learn_done.emit(result.to_dict())
             except Exception as e:
                 self._learn_log.emit(f"[错误] {e}")

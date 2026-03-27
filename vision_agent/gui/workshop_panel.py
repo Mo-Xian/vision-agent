@@ -296,6 +296,13 @@ class WorkshopPanel(QWidget):
         layout.addWidget(knowledge_section)
 
         # ━━━ 核心操作 ━━━
+        learn_hint = QLabel(
+            "自动编排：检测输入 → 行为克隆 → 技能分析 → 在线搜索 → 伪标签扩展 → RL 就绪"
+        )
+        learn_hint.setWordWrap(True)
+        learn_hint.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        layout.addWidget(learn_hint)
+
         self.learn_btn = QPushButton("开始学习")
         self.learn_btn.setObjectName("startBtn")
         self.learn_btn.setCursor(Qt.PointingHandCursor)

@@ -18,17 +18,20 @@
 ## 架构
 
 ```
-阶段1 数据采集:
-  PC:  GameRecorder(窗口捕获+键鼠录制)
-  手机: MobileRecorder(scrcpy+ADB触控) → recording.mp4 + actions.jsonl
+统一学习管线（UnifiedPipeline）— 模拟人类学习过程:
 
-阶段2 行为克隆:
-  LLM Coach 动作发现 → MobileNetV3 编码(576维) → MLP 训练 → 初始策略
+Phase 1 教师教学:
+  检测输入(人类录制 vs 纯视频) → BC 行为克隆训练 → 初始策略
 
-阶段3 数据扩展:
-  伪标签扩展(用模型标注新视频, 高置信度样本扩充) → 重新训练
+Phase 2 自主学习:
+  2a. 技能差距分析 — LLM 教练评估缺什么技能
+  2b. 在线搜索 — 搜索相关教学视频资源
+  2c. 智能伪标签 — 对新视频分帧处理:
+      模型自信(>85%) → 直接标注
+      中等置信度 → 询问 LLM 教练
+      LLM 也不确定 → 标记待人工补充
 
-阶段4 RL 自对弈:
+Phase 3 自我实践:
   BC 模型热启动 → GameEnvironment(scrcpy截屏+ADB操作)
   → DQN Agent(ε-greedy) → RewardDetector(血条/击杀/胜负)
   → 经验回放 → Q网络训练 → 持续改进
@@ -54,7 +57,8 @@
 | `vision_agent/rl/self_play.py` | 自对弈循环（采集+训练双线程） |
 | `vision_agent/rl/preset.py` | 自对弈预设加载器（王者荣耀内置） |
 | `vision_agent/rl/replay_buffer.py` | 经验回放缓冲区 |
-| `vision_agent/workshop/learning_pipeline.py` | 学习管线（训练+伪标签扩展） |
+| `vision_agent/workshop/unified_pipeline.py` | 统一学习管线（教师教学→自主学习→自我实践） |
+| `vision_agent/workshop/learning_pipeline.py` | BC 学习管线（训练+伪标签扩展） |
 | `vision_agent/gui/main_window.py` | GUI 主窗口 |
 | `vision_agent/gui/workshop_panel.py` | 训练工坊面板 |
 | `profiles/wzry_5v5.yaml` | 王者荣耀 Profile（含触控区域） |
