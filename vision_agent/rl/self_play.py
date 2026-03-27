@@ -114,6 +114,11 @@ class SelfPlayLoop:
         self._losses: list[float] = []
         self._lock = threading.Lock()
 
+        # RL→BC 经验蒸馏：记录高奖励 episode 的 (embedding, action) 对
+        self._current_episode_data: list[tuple[np.ndarray, int]] = []
+        self._good_episodes: list[list[tuple[np.ndarray, int]]] = []
+        self._reward_threshold = 0.0  # 动态阈值，取近 10 局中位数
+
     @property
     def is_running(self) -> bool:
         return self._running
@@ -198,10 +203,15 @@ class SelfPlayLoop:
         self._save_checkpoint("final")
         self._save_history()
 
+        # 导出高奖励经验用于 BC 蒸馏
+        exported = self.export_good_experience()
+
         self._log(
             f"[自对弈] 结束 | 对局={self._episode_count} | "
             f"总步数={self._total_steps} | 训练步={self._agent.train_steps}"
         )
+        if exported:
+            self._log(f"[自对弈] 已导出 {exported} 条高奖励经验用于 BC 蒸馏")
 
     # ── 采集线程 ──
 
@@ -223,6 +233,7 @@ class SelfPlayLoop:
                 self._episode_count += 1
             episode_reward = 0.0
             episode_steps = 0
+            self._current_episode_data = []
 
             self._log(f"[采集] 对局 {self._episode_count} 开始")
 
@@ -240,6 +251,9 @@ class SelfPlayLoop:
 
                 # 存储经验
                 self._agent.store(state, action, reward, next_state, done)
+
+                # 记录 (embedding, action) 用于 RL→BC 蒸馏
+                self._current_episode_data.append((state, action))
 
                 state = next_state
                 episode_reward += reward
@@ -260,9 +274,18 @@ class SelfPlayLoop:
                 if done or episode_steps >= self._max_steps_per_episode:
                     break
 
-            # 对局结束
+            # 对局结束 — 筛选高奖励 episode 用于 BC 蒸馏
             with self._lock:
                 self._episode_rewards.append(episode_reward)
+                # 动态阈值：近 10 局奖励的中位数
+                if len(self._episode_rewards) >= 3:
+                    recent = self._episode_rewards[-10:]
+                    self._reward_threshold = float(np.median(recent))
+
+                if (episode_reward > self._reward_threshold
+                        and self._current_episode_data):
+                    self._good_episodes.append(self._current_episode_data)
+                self._current_episode_data = []
 
             avg_10 = np.mean(self._episode_rewards[-10:]) if self._episode_rewards else 0
             self._log(
@@ -367,6 +390,70 @@ class SelfPlayLoop:
         history_path = self._output_dir / "train_history.json"
         with open(history_path, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2)
+
+    # ── RL→BC 经验蒸馏 ──
+
+    def export_good_experience(self) -> int:
+        """导出高奖励经验到 npz 文件，供 BC 重新训练。
+
+        Returns:
+            导出的样本数
+        """
+        with self._lock:
+            if not self._good_episodes:
+                return 0
+
+            all_pairs = []
+            for episode_data in self._good_episodes:
+                all_pairs.extend(episode_data)
+
+            if not all_pairs:
+                return 0
+
+            embeddings = np.array([p[0] for p in all_pairs], dtype=np.float32)
+            actions = np.array([p[1] for p in all_pairs], dtype=np.int64)
+
+        export_path = self._output_dir / "rl_experience.npz"
+        np.savez(
+            export_path,
+            embeddings=embeddings,
+            actions=actions,
+            action_names=json.dumps(self._env.action_names),
+        )
+        self._log(
+            f"[蒸馏] 导出 {len(actions)} 条经验 "
+            f"(来自 {len(self._good_episodes)} 个高奖励对局) → {export_path}"
+        )
+        return len(actions)
+
+    def get_good_experience(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """获取高奖励经验的 (embeddings, action_indices) 数组。
+
+        供 UnifiedPipeline 直接注入 BC 数据集用。
+
+        Returns:
+            (embeddings[N,576], actions[N]) 或 None
+        """
+        with self._lock:
+            if not self._good_episodes:
+                return None
+
+            all_pairs = []
+            for episode_data in self._good_episodes:
+                all_pairs.extend(episode_data)
+
+            if not all_pairs:
+                return None
+
+            embeddings = np.array([p[0] for p in all_pairs], dtype=np.float32)
+            actions = np.array([p[1] for p in all_pairs], dtype=np.int64)
+
+        return embeddings, actions
+
+    @property
+    def good_episode_count(self) -> int:
+        with self._lock:
+            return len(self._good_episodes)
 
     def _log(self, msg: str):
         logger.info(msg)

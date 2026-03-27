@@ -496,32 +496,50 @@ class UnifiedPipeline(LoggingMixin):
             return result
 
         # ────────────────────────────────────
-        #  Phase 3: 自我实践 (RL)
+        #  Phase 3: 自我实践 (RL) + 经验蒸馏回 BC
         # ────────────────────────────────────
-        if device_serial and selfplay_preset and not self._stop:
+        if device_serial and selfplay_preset and selfplay_episodes > 0 and not self._stop:
             self._set_phase(LearningPhase.PRACTICE)
             self._emit_log("=" * 50)
-            self._emit_log("Phase 3: 自我实践（自对弈 RL）")
+            self._emit_log("Phase 3: 自我实践（自对弈 RL → 经验蒸馏 → BC 重训练）")
             self._emit_log(f"  设备: {device_serial}")
             self._emit_log(f"  预设: {selfplay_preset}")
             self._emit_log(f"  热启动模型: {model_dir or '无（从零开始）'}")
+            self._emit_log(f"  对局数: {selfplay_episodes}")
+
+            distill_result = self._rl_and_distill(
+                model_dir=model_dir,
+                actions=actions,
+                device_serial=device_serial,
+                selfplay_preset=selfplay_preset,
+                selfplay_episodes=selfplay_episodes,
+                epochs=epochs,
+                run_dir=run_dir,
+            )
 
             result.phase_history.append({
                 "phase": "practice",
-                "status": "ready",
-                "device": device_serial,
-                "preset": selfplay_preset,
-                "bc_model": model_dir,
+                "success": distill_result.get("success", False),
+                "model_dir": distill_result.get("model_dir", ""),
+                "metrics": distill_result.get("metrics", {}),
+                "rl_episodes": distill_result.get("rl_episodes", 0),
+                "distilled_samples": distill_result.get("distilled_samples", 0),
             })
 
-            # 记录 RL 配置供 GUI 在学习完成后自动提示启动
+            if distill_result.get("success") and distill_result.get("model_dir"):
+                model_dir = distill_result["model_dir"]
+                self._emit_log(f"  RL 蒸馏完成，最终模型: {model_dir}")
+
+        elif device_serial and selfplay_preset:
+            # 有设备但未指定对局数 → 记录配置供手动启动
             result.coach_advice["rl_ready"] = {
                 "device": device_serial,
                 "preset": selfplay_preset,
                 "bc_model": model_dir,
                 "episodes": selfplay_episodes,
             }
-            self._emit_log("  RL 自对弈配置已就绪，学习完成后将提示启动")
+            self._emit_log("─" * 30)
+            self._emit_log("[提示] 未指定自对弈对局数，可在 Agent 面板手动启动 RL。")
         elif not device_serial:
             self._emit_log("─" * 30)
             self._emit_log("[提示] 未连接设备，跳过自对弈实践。连接手机后可在训练工坊启动 RL。")
@@ -705,6 +723,176 @@ class UnifiedPipeline(LoggingMixin):
             pass
 
         return results
+
+    # ================================================================
+    #  RL 自对弈 + 经验蒸馏回 BC
+    # ================================================================
+
+    def _rl_and_distill(
+        self,
+        model_dir: str,
+        actions: list[str],
+        device_serial: str,
+        selfplay_preset: str,
+        selfplay_episodes: int,
+        epochs: int,
+        run_dir,
+    ) -> dict:
+        """执行 RL 自对弈，然后将高奖励经验蒸馏回 BC 模型。
+
+        流程：
+          1. 加载预设 → 启动 SelfPlayLoop（BC 热启动）
+          2. 自对弈 N 局，收集高奖励 episode 的 (embedding, action)
+          3. 停止 RL → 将经验注入 BC 数据集 → 重新训练 E2EMLP
+          4. 产出: 融合了 RL 经验的 E2EMLP 模型
+
+        Returns:
+            {"success": bool, "model_dir": str, "metrics": dict, ...}
+        """
+        from ..rl.preset import load_selfplay_preset
+        from ..rl.self_play import SelfPlayLoop
+
+        # 加载预设
+        try:
+            preset = load_selfplay_preset(selfplay_preset)
+        except Exception as e:
+            self._emit_log(f"  [错误] 加载预设失败: {e}")
+            return {"success": False, "error": str(e)}
+
+        action_zones = preset.get("action_zones", [])
+        if not action_zones:
+            self._emit_log("  [错误] 预设中无动作区域定义")
+            return {"success": False, "error": "no_action_zones"}
+
+        rl_output = str(run_dir / "rl")
+
+        # 启动自对弈
+        loop = SelfPlayLoop(
+            action_zones=action_zones,
+            bc_model_dir=model_dir,
+            output_dir=rl_output,
+            device_serial=device_serial,
+            reward_config=preset.get("reward_config"),
+            start_model_path=preset.get("start_model_path", "models/start.onnx"),
+            max_episodes=selfplay_episodes,
+            on_log=self._on_log,
+            on_stats=lambda s: self._progress(
+                0.85 + 0.1 * min(s.get("episodes", 0) / max(selfplay_episodes, 1), 1),
+                f"RL: {s.get('episodes', 0)}/{selfplay_episodes} 局",
+            ),
+        )
+
+        self._emit_log(f"  [RL] 开始自对弈: {selfplay_episodes} 局...")
+        loop.start()
+
+        # 等待完成或用户停止
+        while loop.is_running and not self._stop:
+            import time as _t
+            _t.sleep(2)
+
+        if self._stop:
+            loop.stop()
+            return {"success": False, "error": "stopped"}
+
+        # 等待线程自然结束
+        loop.stop()
+
+        # 获取统计
+        stats = loop.stats
+        self._emit_log(
+            f"  [RL] 自对弈完成: {stats['episodes']} 局, "
+            f"均奖={stats['avg_reward_10ep']:.1f}, "
+            f"高奖励对局={loop.good_episode_count}"
+        )
+
+        # ── 蒸馏：高奖励经验 → BC 数据集 → 重新训练 ──
+        experience = loop.get_good_experience()
+        if experience is None or len(experience[0]) < 10:
+            self._emit_log("  [蒸馏] 高奖励经验不足，跳过 BC 重训练")
+            return {
+                "success": False,
+                "rl_episodes": stats["episodes"],
+                "distilled_samples": 0,
+            }
+
+        rl_embeddings, rl_actions = experience
+        self._emit_log(
+            f"  [蒸馏] {len(rl_actions)} 条高奖励经验 → 注入 BC 数据集"
+        )
+
+        # 加载原始 BC 数据集
+        from ..data.e2e_dataset import E2EDataset
+
+        dataset_path = Path(model_dir) / "e2e_dataset.npz"
+        if dataset_path.exists():
+            dataset = E2EDataset.load(str(dataset_path))
+        else:
+            dataset = E2EDataset()
+            dataset.set_actions(actions)
+
+        orig_count = len(dataset)
+
+        # 动作名映射（RL 用的是 zone index，需要对应到 action name）
+        zone_names = [z["name"] for z in action_zones]
+
+        injected = 0
+        for emb, act_idx in zip(rl_embeddings, rl_actions):
+            if act_idx < len(zone_names):
+                action_name = zone_names[act_idx]
+                if action_name in dataset.action_map:
+                    dataset.add_sample(emb, action_name)
+                    injected += 1
+
+        self._emit_log(
+            f"  [蒸馏] 数据集: {orig_count} → {len(dataset)} "
+            f"(+{injected} RL 经验)"
+        )
+
+        if injected < 5:
+            self._emit_log("  [蒸馏] 有效注入样本太少，跳过重训练")
+            return {
+                "success": False,
+                "rl_episodes": stats["episodes"],
+                "distilled_samples": injected,
+            }
+
+        # 重新训练 E2EMLP
+        distill_model_dir = str(run_dir / "distilled_model")
+        Path(distill_model_dir).mkdir(parents=True, exist_ok=True)
+        dataset.save(str(Path(distill_model_dir) / "e2e_dataset.npz"))
+
+        from ..data.e2e_trainer import E2ETrainer
+
+        self._emit_log(f"  [蒸馏] 重新训练 E2EMLP ({epochs} 轮)...")
+        trainer = E2ETrainer(
+            dataset=dataset,
+            output_dir=distill_model_dir,
+            epochs=epochs,
+            progress_callback=self._make_train_callback(0.92, 0.06),
+            on_log=self._on_log,
+        )
+
+        metrics = trainer.train()
+        metrics["rl_episodes"] = stats["episodes"]
+        metrics["distilled_samples"] = injected
+        metrics["orig_samples"] = orig_count
+
+        if metrics.get("error"):
+            self._emit_log(f"  [蒸馏] 训练失败: {metrics['error']}")
+            return {"success": False, "metrics": metrics}
+
+        self._emit_log(
+            f"  [蒸馏] 完成: val_acc={metrics.get('best_val_acc', 0):.3f} "
+            f"(含 {injected} 条 RL 经验)"
+        )
+
+        return {
+            "success": True,
+            "model_dir": distill_model_dir,
+            "metrics": metrics,
+            "rl_episodes": stats["episodes"],
+            "distilled_samples": injected,
+        }
 
     # ================================================================
     #  自主学习（智能伪标签）
