@@ -16,7 +16,7 @@ from .styles import COLORS
 
 
 class SelfPlayPanel(QWidget):
-    """Agent 部署面板 — 手机连接 + 模型接管 + 实时画面。"""
+    """Agent 部署面板 — PC/手机 + 模型接管 + 实时画面。"""
 
     agent_start_requested = Signal()
     agent_stop_requested = Signal()
@@ -49,10 +49,24 @@ class SelfPlayPanel(QWidget):
         left_layout.setContentsMargins(8, 8, 8, 8)
         left_layout.setSpacing(10)
 
-        # ━━━ 设备连接 ━━━
-        device_group = QGroupBox("设备连接")
-        dg = QVBoxLayout(device_group)
-        dg.setSpacing(6)
+        # ━━━ 部署目标 ━━━
+        target_group = QGroupBox("部署目标")
+        tg = QVBoxLayout(target_group)
+        tg.setSpacing(6)
+
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("目标"))
+        self.target_combo = QComboBox()
+        self.target_combo.addItems(["手机（scrcpy + ADB 触控）", "PC（窗口捕获 + 键鼠）"])
+        self.target_combo.currentIndexChanged.connect(self._on_target_changed)
+        target_row.addWidget(self.target_combo, 1)
+        tg.addLayout(target_row)
+
+        # -- 手机控件 --
+        self.mobile_target_widget = QWidget()
+        mob_layout = QVBoxLayout(self.mobile_target_widget)
+        mob_layout.setContentsMargins(0, 0, 0, 0)
+        mob_layout.setSpacing(4)
 
         dev_row = QHBoxLayout()
         dev_row.addWidget(QLabel("设备"))
@@ -64,7 +78,7 @@ class SelfPlayPanel(QWidget):
         self.refresh_device_btn.setObjectName("browseBtn")
         self.refresh_device_btn.setMaximumWidth(50)
         dev_row.addWidget(self.refresh_device_btn)
-        dg.addLayout(dev_row)
+        mob_layout.addLayout(dev_row)
 
         status_row = QHBoxLayout()
         self.device_status = QLabel("未连接")
@@ -75,9 +89,38 @@ class SelfPlayPanel(QWidget):
         self.check_device_btn.setObjectName("infoBtn")
         self.check_device_btn.setMaximumWidth(80)
         status_row.addWidget(self.check_device_btn)
-        dg.addLayout(status_row)
+        mob_layout.addLayout(status_row)
 
-        left_layout.addWidget(device_group)
+        tg.addWidget(self.mobile_target_widget)
+
+        # -- PC 控件 --
+        self.pc_target_widget = QWidget()
+        pc_layout = QVBoxLayout(self.pc_target_widget)
+        pc_layout.setContentsMargins(0, 0, 0, 0)
+        pc_layout.setSpacing(4)
+
+        win_row = QHBoxLayout()
+        win_row.addWidget(QLabel("窗口"))
+        self.window_combo = QComboBox()
+        self.window_combo.setEditable(True)
+        self.window_combo.addItem("（全屏）")
+        self.window_combo.setToolTip("选择游戏窗口，Agent 将捕获此窗口并用键鼠控制")
+        win_row.addWidget(self.window_combo, 1)
+        self.refresh_windows_btn = QPushButton("刷新")
+        self.refresh_windows_btn.setObjectName("browseBtn")
+        self.refresh_windows_btn.setMaximumWidth(50)
+        self.refresh_windows_btn.clicked.connect(self._refresh_window_list)
+        win_row.addWidget(self.refresh_windows_btn)
+        pc_layout.addLayout(win_row)
+
+        pc_hint = QLabel("Agent 将通过 pynput 模拟键鼠操作控制游戏")
+        pc_hint.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        pc_layout.addWidget(pc_hint)
+
+        tg.addWidget(self.pc_target_widget)
+        self.pc_target_widget.setVisible(False)
+
+        left_layout.addWidget(target_group)
 
         # ━━━ 游戏预设 ━━━
         preset_group = QGroupBox("游戏预设")
@@ -181,10 +224,10 @@ class SelfPlayPanel(QWidget):
         self.screen_display.setText("未连接设备")
         right_layout.addWidget(self.screen_display, 1)
 
-        screen_info = QLabel("画面来自 scrcpy 窗口截取，Agent 接管后自动显示")
-        screen_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        screen_info.setWordWrap(True)
-        right_layout.addWidget(screen_info)
+        self.screen_info = QLabel("画面来自 scrcpy/游戏窗口截取，Agent 接管后自动显示")
+        self.screen_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        self.screen_info.setWordWrap(True)
+        right_layout.addWidget(self.screen_info)
 
         splitter.addWidget(left_scroll)
         splitter.addWidget(right)
@@ -203,6 +246,38 @@ class SelfPlayPanel(QWidget):
         self.agent_stop_btn.clicked.connect(self.agent_stop_requested)
         self.log_signal.connect(self._append_log)
         self.frame_signal.connect(self._update_frame)
+
+    # ── 部署目标切换 ──
+
+    def _on_target_changed(self, index: int):
+        is_mobile = (index == 0)
+        self.mobile_target_widget.setVisible(is_mobile)
+        self.pc_target_widget.setVisible(not is_mobile)
+        if is_mobile:
+            self._refresh_devices()
+        else:
+            self._refresh_window_list()
+
+    def is_mobile_target(self) -> bool:
+        return self.target_combo.currentIndex() == 0
+
+    def get_window_title(self) -> str:
+        text = self.window_combo.currentText()
+        if text == "（全屏）" or not text.strip():
+            return ""
+        return text.strip()
+
+    def _refresh_window_list(self):
+        from ..data.game_recorder import GameRecorder
+        titles = GameRecorder.list_windows()
+        current = self.window_combo.currentText()
+        self.window_combo.clear()
+        self.window_combo.addItem("（全屏）")
+        for t in titles:
+            self.window_combo.addItem(t)
+        idx = self.window_combo.findText(current)
+        if idx >= 0:
+            self.window_combo.setCurrentIndex(idx)
 
     # ── 设备管理 ──
 
@@ -349,7 +424,9 @@ class SelfPlayPanel(QWidget):
     def set_agent_running_state(self, running: bool):
         self.agent_start_btn.setEnabled(not running)
         self.agent_stop_btn.setEnabled(running)
+        self.target_combo.setEnabled(not running)
         self.device_combo.setEnabled(not running)
+        self.window_combo.setEnabled(not running)
         self.preset_combo.setEnabled(not running)
         if running:
             self.agent_status.setText("Agent 运行中...")

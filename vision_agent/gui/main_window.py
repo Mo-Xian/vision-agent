@@ -565,8 +565,13 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "提示", "请选择模型目录（DQN 或 BC 训练产出）")
             return
 
-        device_serial = sp.get_device_serial()
         preset_name = sp.get_preset_name()
+        is_mobile = sp.is_mobile_target()
+
+        if is_mobile:
+            device_serial = sp.get_device_serial()
+        else:
+            device_serial = ""
 
         sp.set_agent_running_state(True)
         self._agent_running = True
@@ -574,45 +579,13 @@ class MainWindow(QMainWindow):
         def _run():
             try:
                 from ..rl.preset import load_selfplay_preset
-                from ..decision.dqn_engine import DQNEngine
-
                 preset = load_selfplay_preset(preset_name)
 
-                self._dqn_engine = DQNEngine(
-                    model_dir=model_dir,
-                    touch_zones=preset.get("action_zones", []),
-                    device_serial=device_serial,
-                    execute_actions=True,
-                )
-                self._dqn_engine.on_start()
-
-                self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir}")
-                self._selfplay_log.emit(f"[Agent] 开始接管游戏 (预设: {preset_name})")
-
-                from ..core.vision_encoder import VisionEncoder
-                encoder = VisionEncoder()
-
-                # 启动帧捕获显示
-                self._start_agent_frame_capture()
-
-                import time
-                while self._agent_running:
-                    frame = self._capture_scrcpy_frame()
-                    if frame is None:
-                        time.sleep(0.5)
-                        continue
-
-                    self._selfplay_frame.emit(frame)
-
-                    actions = self._dqn_engine.decide(embedding=frame)
-                    if actions:
-                        action = actions[0]
-                        if action.name != "idle":
-                            self._selfplay_log.emit(
-                                f"[Agent] {action.name} (conf={action.confidence:.2f}) {action.reason}"
-                            )
-
-                    time.sleep(0.2)  # ~5 FPS
+                if is_mobile:
+                    self._run_agent_mobile(model_dir, preset, device_serial)
+                else:
+                    window_title = sp.get_window_title()
+                    self._run_agent_pc(model_dir, preset, window_title)
 
             except Exception as e:
                 self._selfplay_log.emit(f"[Agent 错误] {e}")
@@ -625,7 +598,92 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: sp.set_agent_running_state(False))
 
         threading.Thread(target=_run, daemon=True).start()
-        self._log("[Agent] 启动中...")
+        target_info = "手机" if is_mobile else "PC"
+        self._log(f"[Agent] 启动中 ({target_info})...")
+
+    def _run_agent_mobile(self, model_dir: str, preset: dict, device_serial: str):
+        """手机端 Agent：scrcpy 截屏 + ADB 触控。"""
+        from ..decision.dqn_engine import DQNEngine
+
+        self._dqn_engine = DQNEngine(
+            model_dir=model_dir,
+            touch_zones=preset.get("action_zones", []),
+            device_serial=device_serial,
+            execute_actions=True,
+        )
+        self._dqn_engine.on_start()
+
+        self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir}")
+        self._selfplay_log.emit("[Agent] 手机模式：scrcpy 截屏 + ADB 触控")
+
+        import time
+        while self._agent_running:
+            frame = self._capture_scrcpy_frame()
+            if frame is None:
+                time.sleep(0.5)
+                continue
+
+            self._selfplay_frame.emit(frame)
+            actions = self._dqn_engine.decide(embedding=frame)
+            if actions:
+                action = actions[0]
+                if action.name != "idle":
+                    self._selfplay_log.emit(
+                        f"[Agent] {action.name} (conf={action.confidence:.2f}) {action.reason}"
+                    )
+            time.sleep(0.2)
+
+    def _run_agent_pc(self, model_dir: str, preset: dict, window_title: str):
+        """PC 端 Agent：窗口捕获 + 键鼠模拟。"""
+        from ..decision.e2e_engine import E2EEngine
+
+        engine = E2EEngine(model_dir=model_dir)
+        engine.on_start()
+        self._dqn_engine = engine  # 复用变量，方便 cleanup
+
+        self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir}")
+        win_info = f"窗口: {window_title}" if window_title else "全屏"
+        self._selfplay_log.emit(f"[Agent] PC 模式：{win_info} + 键鼠控制")
+
+        from ..data.game_recorder import GameRecorder
+        import mss
+        import cv2
+        import numpy as np
+        import time
+
+        while self._agent_running:
+            # 截取游戏窗口
+            frame = None
+            try:
+                if window_title:
+                    region = GameRecorder._find_window(window_title)
+                else:
+                    region = None  # 全屏
+
+                with mss.mss() as sct:
+                    if region:
+                        img = sct.grab(region)
+                    else:
+                        img = sct.grab(sct.monitors[1])
+                    frame = np.array(img)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            except Exception:
+                time.sleep(0.5)
+                continue
+
+            if frame is None:
+                time.sleep(0.5)
+                continue
+
+            self._selfplay_frame.emit(frame)
+            actions = engine.decide(embedding=frame)
+            if actions:
+                action = actions[0]
+                if action.name != "idle":
+                    self._selfplay_log.emit(
+                        f"[Agent] {action.name} (conf={action.confidence:.2f}) {action.reason}"
+                    )
+            time.sleep(0.2)
 
     @Slot()
     def _stop_agent(self):
