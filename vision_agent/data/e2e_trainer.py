@@ -1,8 +1,7 @@
 """端到端训练器：视觉嵌入 → MLP → 动作。
 
-两个训练阶段：
-  1. 行为克隆（Behavior Cloning）：用录制的人类操作数据监督训练
-  2. 强化微调（RL Fine-tune）：策略梯度 + 简单奖励信号（可选）
+行为克隆（Behavior Cloning）：用录制的人类操作数据监督训练。
+RL 强化由 SelfPlayLoop 在真实设备上独立执行，不在此模块中。
 
 产出：
   - model.pt       — MLP 权重

@@ -631,9 +631,12 @@ class LearningPipeline(LoggingMixin):
         else:
             self._emit_log("  [注意] 未找到原始数据集，仅使用伪标签")
 
-        # 添加伪标签数据
+        # 添加伪标签数据（含数据增强）
         for emb, action_name, conf in pseudo_samples:
             new_dataset.add_sample(emb, action_name)
+            if np.random.random() < 0.5:
+                augmented = emb + np.random.normal(0, 0.02, emb.shape)
+                new_dataset.add_sample(augmented, action_name)
 
         self._emit_log(
             f"  合并后: {len(new_dataset)} 样本 "
@@ -651,13 +654,19 @@ class LearningPipeline(LoggingMixin):
         Path(new_model_dir).mkdir(parents=True, exist_ok=True)
         new_dataset.save(str(Path(new_model_dir) / "e2e_dataset.npz"))
 
+        def _expand_train_cb(ep, total, loss, tacc, vacc):
+            self._progress("train", 0.6 + 0.35 * ep / max(total, 1))
+            if self._on_train_step:
+                try:
+                    self._on_train_step(loss, tacc, vacc)
+                except Exception:
+                    pass
+
         trainer = E2ETrainer(
             dataset=new_dataset,
             output_dir=new_model_dir,
             epochs=epochs,
-            progress_callback=lambda ep, total, loss, tacc, vacc: self._progress(
-                "train", 0.6 + 0.35 * ep / max(total, 1)
-            ),
+            progress_callback=_expand_train_cb,
             on_log=self._on_log,
         )
 

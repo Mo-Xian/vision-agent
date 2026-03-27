@@ -105,6 +105,7 @@ class UnifiedPipeline(LoggingMixin):
         self._on_train_step = on_train_step
         self._stop = False
         self._provider = None
+        self._encoder = None
         self._phase = LearningPhase.IDLE
 
     def stop(self):
@@ -142,6 +143,12 @@ class UnifiedPipeline(LoggingMixin):
                 except Exception:
                     pass
         return callback
+
+    def _get_encoder(self):
+        if self._encoder is None:
+            from ..core.vision_encoder import VisionEncoder
+            self._encoder = VisionEncoder()
+        return self._encoder
 
     def _create_provider(self):
         if self._provider is None:
@@ -404,7 +411,10 @@ class UnifiedPipeline(LoggingMixin):
             self._emit_log("─" * 30)
             self._emit_log("[教练] 最终总结...")
             summary = self._coach_summary(provider, result)
+            rl_ready = result.coach_advice.get("rl_ready")
             result.coach_advice = summary
+            if rl_ready:
+                result.coach_advice["rl_ready"] = rl_ready
             if summary.get("next_steps"):
                 self._emit_log("  下一步建议:")
                 for step in summary["next_steps"]:
@@ -586,7 +596,6 @@ class UnifiedPipeline(LoggingMixin):
         """
         import cv2
         import torch
-        from ..core.vision_encoder import VisionEncoder
         from ..data.e2e_dataset import E2EDataset
 
         model_path = Path(model_dir) / "model.pt"
@@ -615,7 +624,7 @@ class UnifiedPipeline(LoggingMixin):
         model.load_state_dict(torch.load(model_path, map_location="cpu"))
         model.eval()
 
-        encoder = VisionEncoder()
+        encoder = self._get_encoder()
 
         # LLM 教练（用于辅助标注不确定帧）
         coach = None
@@ -839,7 +848,7 @@ class UnifiedPipeline(LoggingMixin):
         import torch
 
         embeddings = encoder.encode_batch(frames)
-        tensors = torch.tensor(np.array(embeddings, dtype=np.float32))
+        tensors = torch.from_numpy(embeddings)
 
         with torch.no_grad():
             logits = model(tensors)
