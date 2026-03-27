@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'  # 推送 v1.0.0 等 tag 时触发
 
+permissions:
+  contents: write  # 创建 Release 需要写权限
+
 jobs:
   build-windows:
     runs-on: windows-latest
