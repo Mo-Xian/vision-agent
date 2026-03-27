@@ -42,21 +42,24 @@ jobs:
         shell: bash
 
       - name: Extract release notes from CHANGELOG
-        id: changelog
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
-          $content = Get-Content CHANGELOG.md -Raw
-          # 匹配 ## [vX.Y.Z] 到下一个 ## [ 或文件结尾
-          if ($content -match "(?ms)## \[$tag\][^\n]*\n(.*?)(?=\n## \[|$)") {
-            $notes = $Matches[1].Trim()
-          } else {
-            $notes = "Release $tag"
-          }
-          # 写入文件避免多行转义问题
-          $notes | Out-File -FilePath release_notes.md -Encoding utf8
-          Write-Host "Release notes extracted for $tag"
-        shell: pwsh
+          TAG="${{ github.ref_name }}"
+          # 提取 ## [vX.Y.Z] 段落到下一个 ## [ 之前
+          awk -v tag="$TAG" '
+            BEGIN { found=0 }
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" tag "]")) { found=1; next }
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          # 如果没提取到内容，用默认文本
+          if [ ! -s release_notes.md ]; then
+            echo "Release $TAG" > release_notes.md
+          fi
+          echo "--- Release notes ---"
+          cat release_notes.md
+        shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
