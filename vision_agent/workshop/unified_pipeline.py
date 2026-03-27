@@ -177,10 +177,15 @@ class UnifiedPipeline(LoggingMixin):
         selfplay_episodes: int = 0,
         confidence_threshold: float = 0.85,
         search_online: bool = True,
+        max_improve_rounds: int = 3,
     ) -> UnifiedResult:
         """一键启动统一学习流程。
 
         自动检测输入类型并编排：教师教学 → 自主学习 → 自我实践。
+
+        Args:
+            max_improve_rounds: 自主改进最大轮数（搜索→下载→标注→训练）。
+                设为 0 则跳过自主搜索，只处理用户提供的视频。
         """
         self._stop = False
         run_dir = self._output_dir / time.strftime("%Y%m%d_%H%M%S")
@@ -276,69 +281,28 @@ class UnifiedPipeline(LoggingMixin):
             return result
 
         # ────────────────────────────────────
-        #  Phase 2: 自主学习
+        #  Phase 2: 自主改进循环
         # ────────────────────────────────────
+        #
+        #  Round 0: 处理用户提供的额外视频（plain_videos）
+        #  Round 1+: 自动搜索→下载→伪标签→训练→评估→继续/停止
+        #
+        #  停止条件：
+        #    - 精度不再提升（< +0.5%）
+        #    - 达到最大轮数 max_improve_rounds
+        #    - 无技能缺口
+        #    - 搜不到/下不到新视频 → 标记待人工
+        #    - 用户手动停止
 
-        # 2a. 分析技能缺口 — 让 LLM 教练评估还缺什么
-        if provider and model_dir and not self._stop:
-            self._set_phase(LearningPhase.ASKING_COACH)
-            self._emit_log("=" * 50)
-            self._emit_log("Phase 2a: 技能差距分析")
+        prev_acc = 0.0
+        if result.phase_history:
+            prev_acc = result.phase_history[0].get("metrics", {}).get("best_val_acc", 0)
 
-            skill_gaps = self._analyze_skill_gaps(
-                provider, actions, description, knowledge,
-                result.phase_history[0].get("metrics", {}) if result.phase_history else {},
-            )
-            result.skill_gaps = skill_gaps
-
-            if skill_gaps:
-                self._emit_log(f"  教练发现 {len(skill_gaps)} 个技能缺口:")
-                for gap in skill_gaps:
-                    self._emit_log(f"    - {gap}")
-
-        if self._stop:
-            result.model_dir = model_dir
-            return result
-
-        # 2b. 搜索在线学习资源（如果启用且有 LLM）
-        search_videos = []
-        if search_online and provider and result.skill_gaps and not self._stop:
-            self._set_phase(LearningPhase.SEARCHING_VIDEOS)
-            self._emit_log("=" * 50)
-            self._emit_log("Phase 2b: 搜索在线学习资源")
-
-            suggestions = self._suggest_search_queries(
-                provider, description, result.skill_gaps,
-            )
-            if suggestions:
-                self._emit_log("  建议搜索以下关键词来获取训练视频:")
-                for q in suggestions:
-                    self._emit_log(f"    🔍 {q}")
-
-                # 尝试 MiniMax MCP Search
-                search_results = self._search_online(provider, suggestions)
-                if search_results:
-                    self._emit_log(f"  找到 {len(search_results)} 个相关资源:")
-                    for sr in search_results[:5]:
-                        self._emit_log(f"    • {sr.get('title', '')} — {sr.get('url', '')}")
-
-                # 搜索结果目前需要人工下载，标记待处理
-                if search_results:
-                    result.human_review_items.append({
-                        "type": "download_videos",
-                        "reason": "在线搜索到相关学习资源，请下载后导入",
-                        "search_results": search_results[:10],
-                    })
-
-        if self._stop:
-            result.model_dir = model_dir
-            return result
-
-        # 2c. 伪标签扩展 — 用现有模型标注额外视频
+        # ── Round 0: 处理用户提供的额外视频 ──
         if plain_videos and model_dir and not self._stop:
             self._set_phase(LearningPhase.SELF_STUDY)
             self._emit_log("=" * 50)
-            self._emit_log(f"Phase 2c: 自主学习（{len(plain_videos)} 个视频）")
+            self._emit_log(f"Phase 2 Round 0: 自主学习（{len(plain_videos)} 个用户视频）")
 
             expand_result = self._self_study(
                 model_dir, plain_videos, provider, actions,
@@ -346,7 +310,7 @@ class UnifiedPipeline(LoggingMixin):
             )
 
             result.phase_history.append({
-                "phase": "self_study",
+                "phase": "self_study_round0",
                 "success": expand_result.get("success", False),
                 "model_dir": expand_result.get("model_dir", ""),
                 "metrics": expand_result.get("metrics", {}),
@@ -355,14 +319,129 @@ class UnifiedPipeline(LoggingMixin):
 
             if expand_result.get("success") and expand_result.get("model_dir"):
                 model_dir = expand_result["model_dir"]
-                self._emit_log(f"  自主学习完成: 新模型 → {model_dir}")
+                new_acc = expand_result["metrics"].get("best_val_acc", 0)
+                self._emit_log(
+                    f"  Round 0 完成: val_acc {prev_acc:.3f} → {new_acc:.3f}"
+                )
+                prev_acc = new_acc
 
-            # 有无法处理的帧 → 标记待人工
             if expand_result.get("human_review"):
                 result.human_review_items.extend(expand_result["human_review"])
-                self._emit_log(
-                    f"  [待人工] {len(expand_result['human_review'])} 个问题需要人工确认"
+
+        if self._stop:
+            result.model_dir = model_dir
+            return result
+
+        # ── Round 1+: 自主搜索→下载→标注→训练 ──
+        if search_online and provider and model_dir and max_improve_rounds > 0:
+            from .video_downloader import download_videos, is_ytdlp_available
+
+            for round_num in range(1, max_improve_rounds + 1):
+                if self._stop:
+                    break
+
+                self._emit_log("=" * 50)
+                self._emit_log(f"Phase 2 Round {round_num}/{max_improve_rounds}: 自主改进")
+
+                # ─ 技能差距分析 ─
+                self._set_phase(LearningPhase.ASKING_COACH)
+                latest_metrics = (
+                    result.phase_history[-1].get("metrics", {})
+                    if result.phase_history else {}
                 )
+                skill_gaps = self._analyze_skill_gaps(
+                    provider, actions, description, knowledge, latest_metrics,
+                )
+                result.skill_gaps = skill_gaps
+
+                if not skill_gaps:
+                    self._emit_log("  教练认为无明显技能缺口，停止自主改进")
+                    break
+
+                self._emit_log(f"  技能缺口: {', '.join(skill_gaps[:5])}")
+
+                # ─ 搜索在线视频 ─
+                self._set_phase(LearningPhase.SEARCHING_VIDEOS)
+                suggestions = self._suggest_search_queries(
+                    provider, description, skill_gaps,
+                )
+                if not suggestions:
+                    self._emit_log("  无搜索建议，停止自主改进")
+                    break
+
+                search_results = self._search_online(provider, suggestions)
+                if not search_results:
+                    self._emit_log("  搜索无结果，停止自主改进")
+                    break
+
+                self._emit_log(f"  找到 {len(search_results)} 个相关资源")
+
+                # ─ 自动下载视频 ─
+                urls = [r.get("url", "") for r in search_results]
+                download_dir = str(run_dir / f"downloads_round{round_num}")
+
+                if is_ytdlp_available():
+                    downloaded = download_videos(
+                        urls, download_dir,
+                        max_count=5, max_duration=600,
+                        on_log=self._on_log,
+                    )
+                else:
+                    downloaded = []
+
+                if not downloaded:
+                    # 无法自动下载 → 标记待人工，退出循环
+                    self._emit_log("  无法自动下载视频，标记待人工处理")
+                    result.human_review_items.append({
+                        "type": "download_videos",
+                        "reason": f"Round {round_num}: 搜索到视频但无法自动下载，请手动下载后导入",
+                        "search_results": search_results[:10],
+                    })
+                    break
+
+                # ─ 伪标签 + 重新训练 ─
+                self._set_phase(LearningPhase.SELF_STUDY)
+                self._emit_log(f"  自主学习: {len(downloaded)} 个下载视频")
+
+                round_dir = run_dir / f"round{round_num}"
+                expand_result = self._self_study(
+                    model_dir, downloaded, provider, actions,
+                    knowledge, confidence_threshold, epochs, round_dir,
+                )
+
+                result.phase_history.append({
+                    "phase": f"self_study_round{round_num}",
+                    "success": expand_result.get("success", False),
+                    "model_dir": expand_result.get("model_dir", ""),
+                    "metrics": expand_result.get("metrics", {}),
+                    "videos_downloaded": len(downloaded),
+                    "uncertain_frames": expand_result.get("uncertain_count", 0),
+                })
+
+                if expand_result.get("human_review"):
+                    result.human_review_items.extend(expand_result["human_review"])
+
+                if not expand_result.get("success"):
+                    self._emit_log(f"  Round {round_num} 训练失败，停止自主改进")
+                    break
+
+                # ─ 评估改进幅度 ─
+                new_acc = expand_result["metrics"].get("best_val_acc", 0)
+                improvement = new_acc - prev_acc
+                self._emit_log(
+                    f"  Round {round_num} 结果: val_acc {prev_acc:.3f} → {new_acc:.3f} "
+                    f"({'+' if improvement >= 0 else ''}{improvement*100:.1f}%)"
+                )
+
+                if new_acc > prev_acc:
+                    model_dir = expand_result["model_dir"]
+                    prev_acc = new_acc
+
+                if improvement < 0.005:
+                    self._emit_log("  精度未显著提升，停止自主改进")
+                    break
+
+            self._emit_log(f"  自主改进结束，最终 val_acc={prev_acc:.3f}")
 
         if self._stop:
             result.model_dir = model_dir
