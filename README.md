@@ -143,12 +143,15 @@ python main.py eval runs/workshop/exp1/model --mode stats
 ### EXE 打包
 
 ```bash
-# 本地打包
+# VisionAgent 主程序打包
 build.bat                  # Windows 一键打包
 python build_exe.py        # 跨平台打包脚本
 python build_exe.py --debug  # 带控制台的调试版
-
 # 产出在 dist/VisionAgent/
+
+# 远程采集服务打包（单文件 EXE，远程 PC 无需安装 Python）
+python build_server.py --onefile
+# 产出 dist/RemoteCaptureServer.exe
 ```
 
 ### 自动发布
@@ -158,7 +161,9 @@ python build_exe.py --debug  # 带控制台的调试版
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
-# → GitHub Actions 自动打包 → Releases 页面下载 VisionAgent-v1.0.0-windows.zip
+# → GitHub Actions 自动打包 → Releases 页面下载：
+#   VisionAgent-v1.0.0-windows.zip        (主程序)
+#   RemoteCaptureServer-v1.0.0-windows.exe (远程采集服务)
 ```
 
 ---
