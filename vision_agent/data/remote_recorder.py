@@ -154,7 +154,7 @@ class RemoteRecorder:
 
     def _record_loop(self):
         """轮询 hub 获取帧和事件。"""
-        last_frame = None
+        last_ts = -1.0
         fps = 10
         interval = 1.0 / fps
 
@@ -168,20 +168,21 @@ class RemoteRecorder:
             for evt in events:
                 self._handle_event(evt)
 
-            # 获取帧
+            # 获取帧（通过时间戳判断是否为新帧）
             frame_data = self._hub.get_frame_with_ts()
-            if frame_data is not None and frame_data is not last_frame:
-                last_frame = frame_data
+            if frame_data is not None:
                 ts, frame = frame_data
-                self._handle_frame(ts, frame)
+                if ts != last_ts:
+                    last_ts = ts
+                    self._handle_frame(ts, frame)
 
-                # 从 meta 更新 fps
-                meta = self._hub.client_meta
-                if meta.get("fps"):
-                    new_fps = meta["fps"]
-                    if new_fps != fps:
-                        fps = new_fps
-                        interval = 1.0 / fps
+                    # 从 meta 更新 fps
+                    meta = self._hub.client_meta
+                    if meta.get("fps"):
+                        new_fps = meta["fps"]
+                        if new_fps != fps:
+                            fps = new_fps
+                            interval = 1.0 / fps
 
             time.sleep(interval * 0.5)  # 轮询频率 = 2x FPS
 

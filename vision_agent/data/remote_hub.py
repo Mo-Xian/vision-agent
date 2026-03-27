@@ -124,10 +124,10 @@ class RemoteHub:
     def send_command(self, cmd: dict):
         """发送控制指令到远程客户端。"""
         if self._client_ws and self._loop and self._client_connected.is_set():
+            msg = json.dumps(cmd)
             try:
                 self._loop.call_soon_threadsafe(
-                    self._loop.create_task,
-                    self._async_send(json.dumps(cmd)),
+                    lambda: self._loop.create_task(self._async_send(msg))
                 )
             except RuntimeError:
                 pass

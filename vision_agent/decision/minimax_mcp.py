@@ -114,14 +114,14 @@ class MiniMaxMCPTools:
 
         return "[图像理解失败: 重试次数耗尽]"
 
-    def web_search(self, query: str) -> str:
+    def web_search(self, query: str) -> list[dict]:
         """联网搜索。
 
         Args:
             query: 搜索关键词
 
         Returns:
-            搜索结果摘要文本
+            搜索结果列表，每项含 url/title/snippet 字段
         """
         payload = {"q": query}
         try:
@@ -135,20 +135,20 @@ class MiniMaxMCPTools:
 
             base_resp = data.get("base_resp", {})
             if base_resp.get("status_code", 0) != 0:
-                err = base_resp.get("status_msg", "unknown error")
-                return f"[搜索失败: {err}]"
+                return []
 
-            # 提取搜索结果摘要
             organic = data.get("organic", [])
             if not organic:
-                return "[无搜索结果]"
+                return []
 
-            lines = []
+            results = []
             for item in organic[:5]:
-                title = item.get("title", "")
-                snippet = item.get("snippet", "")
-                lines.append(f"- {title}: {snippet}")
-            return "\n".join(lines)
+                results.append({
+                    "url": item.get("link", item.get("url", "")),
+                    "title": item.get("title", ""),
+                    "snippet": item.get("snippet", ""),
+                })
+            return results
 
         except Exception as e:
             logger.error(f"MiniMax 搜索请求失败: {e}")

@@ -23,6 +23,9 @@ def build(onefile: bool = False):
         "cv2", "numpy", "mss",
         "pynput", "pynput.keyboard", "pynput.mouse",
         "websockets", "websockets.legacy", "websockets.legacy.server",
+        "websockets.legacy.client", "websockets.legacy.protocol",
+        "websockets.frames", "websockets.uri", "websockets.headers",
+        "asyncio",
     ]
 
     excludes = [

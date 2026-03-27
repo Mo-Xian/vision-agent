@@ -725,8 +725,6 @@ class UnifiedPipeline(LoggingMixin):
                     search_result = mcp.web_search(f"{q} 教学视频 游戏攻略")
                     if isinstance(search_result, list):
                         results.extend(search_result[:3])
-                    elif isinstance(search_result, str):
-                        results.append({"title": q, "content": search_result[:200]})
                 except Exception:
                     pass
         except ImportError:
@@ -1226,7 +1224,8 @@ class UnifiedPipeline(LoggingMixin):
             }})
 
         try:
-            # 使用 pipeline 持有的 provider，避免访问 coach 私有属性
+            if not self._provider:
+                return [None] * len(frames)
             resp = self._provider.chat(
                 messages=[{"role": "user", "content": content}],
                 system="你是游戏 AI 教练，为游戏截图标注最合适的动作。只返回 JSON 数组。",

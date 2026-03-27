@@ -340,7 +340,7 @@ def cmd_self_play(args):
 def cmd_eval(args):
     """评估训练模型。"""
     from eval_model import main as eval_main
-    sys.argv = ["eval_model", "--model-dir", args.model_dir, "--mode", args.mode]
+    sys.argv = ["eval_model", "--model", args.model_dir, args.mode]
     if args.video:
         sys.argv.extend(["--video", args.video])
     eval_main()
