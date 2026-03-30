@@ -31,6 +31,9 @@ jobs:
       - name: Build RemoteCaptureClient EXE
         run: python build_server.py --onefile
 
+      - name: Build RelayServer EXE
+        run: python build_relay.py
+
       - name: Copy config files
         run: |
           mkdir -p dist/VisionAgent/profiles
@@ -46,6 +49,10 @@ jobs:
 
       - name: Copy RemoteCaptureClient EXE
         run: cp dist/RemoteCaptureClient.exe RemoteCaptureClient-${{ github.ref_name }}-windows.exe
+        shell: bash
+
+      - name: Copy RelayServer EXE
+        run: cp dist/RelayServer.exe RelayServer-${{ github.ref_name }}-windows.exe
         shell: bash
 
       - name: Extract release notes from CHANGELOG
@@ -75,6 +82,7 @@ jobs:
           path: |
             VisionAgent-${{ github.ref_name }}-windows.zip
             RemoteCaptureClient-${{ github.ref_name }}-windows.exe
+            RelayServer-${{ github.ref_name }}-windows.exe
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -82,6 +90,7 @@ jobs:
           files: |
             VisionAgent-${{ github.ref_name }}-windows.zip
             RemoteCaptureClient-${{ github.ref_name }}-windows.exe
+            RelayServer-${{ github.ref_name }}-windows.exe
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') }}
