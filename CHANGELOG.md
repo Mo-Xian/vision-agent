@@ -4,6 +4,29 @@
 
 ---
 
+## [v0.3.0] - 2026-03-30
+
+公网中继 + GUI 简化：远程设备无需同一局域网，手机无需 ADB。
+
+### 新功能
+
+- **公网中继服务**：`relay_server.py` 轻量房间转发（~160 行，仅依赖 websockets），部署到公网服务器后双方主动连接，消息原样转发不解析不缓存
+- **RelayServer EXE 打包**：CI 自动构建 `RelayServer.exe`，Windows 服务器无需 Python
+- **RemoteHub 中继模式**：新增 `relay_url`/`room_id` 参数，支持局域网直连和公网中继两种模式
+- **GUI 公网中继选项**：训练工坊和 Agent 部署面板新增「局域网直连 / 公网中继」切换，填入中继地址和房间号即可跨网连接
+- **Android 客户端**：原生 App（MediaProjection 截屏 + AccessibilityService 控制），无需 USB 调试和 ADB
+- **Android 中继支持**：App 支持填写房间 ID 和 Token，可通过公网中继连接
+- **PC 客户端中继支持**：`RemoteCaptureClient` 新增 `--room`/`--token` 参数
+- **CLI hub 中继参数**：`python main.py hub --relay ws://server:9877 --room xxx`
+
+### 变更
+
+- **GUI 简化为两种模式**：录制源和部署目标从 3 选项（PC/手机/远程PC）简化为 2 选项（PC/远程设备）
+- 移除 scrcpy/ADB 手机直连（手机端通过 Android App + RemoteHub 连接）
+- 移除 `is_mobile_source()`、`is_mobile_target()` 及相关 ADB 管理代码
+
+---
+
 ## [v0.2.0] - 2026-03-27
 
 远程 PC 支持（服务端-客户端架构）：训练和 Agent 控制均可跨局域网操作。
