@@ -6,23 +6,31 @@
 
 ## [v0.3.0] - 2026-03-30
 
-公网中继 + GUI 简化：远程设备无需同一局域网，手机无需 ADB。
+统一远程架构：公网中继 + RemoteHub 全链路，彻底移除 scrcpy/ADB 依赖。
 
 ### 新功能
 
 - **公网中继服务**：`relay_server.py` 轻量房间转发（~160 行，仅依赖 websockets），部署到公网服务器后双方主动连接，消息原样转发不解析不缓存
 - **RelayServer EXE 打包**：CI 自动构建 `RelayServer.exe`，Windows 服务器无需 Python
 - **RemoteHub 中继模式**：新增 `relay_url`/`room_id` 参数，支持局域网直连和公网中继两种模式
+- **RemoteHub 触控接口**：新增 `send_tap()`、`send_swipe()`、`screen_size`，供 RL 环境调用
 - **GUI 公网中继选项**：训练工坊和 Agent 部署面板新增「局域网直连 / 公网中继」切换，填入中继地址和房间号即可跨网连接
 - **Android 客户端**：原生 App（MediaProjection 截屏 + AccessibilityService 控制），无需 USB 调试和 ADB
+- **Android APK CI 构建**：GitHub Actions 自动构建 debug/release APK 并发布到 Releases
 - **Android 中继支持**：App 支持填写房间 ID 和 Token，可通过公网中继连接
 - **PC 客户端中继支持**：`RemoteCaptureClient` 新增 `--room`/`--token` 参数
 - **CLI hub 中继参数**：`python main.py hub --relay ws://server:9877 --room xxx`
+- **CLI self-play 远程连接**：`python main.py self-play --preset wzry --relay ws://server:9877 --room xxx`
 
 ### 变更
 
+- **RL 自对弈重构为 RemoteHub 模式**：`GameEnvironment` 通过 RemoteHub 获取画面和发送触控指令，不再依赖 scrcpy 截屏和 ADB 命令
+- **SelfPlayLoop / UnifiedPipeline**：`device_serial` 参数替换为 `hub`（RemoteHub 实例）
+- **DQNEngine 精简为 PC 键盘模式**：移除 ADB 触控执行，远程触控改由 RemoteHub 转发
 - **GUI 简化为两种模式**：录制源和部署目标从 3 选项（PC/手机/远程PC）简化为 2 选项（PC/远程设备）
-- 移除 scrcpy/ADB 手机直连（手机端通过 Android App + RemoteHub 连接）
+- **CI 拆分为三阶段并行**：build-windows + build-android + release
+- 删除 `mobile_recorder.py`（scrcpy+ADB 手机录制器，~750 行）
+- 移除 CLI `mobile` 子命令及 self-play 的 `--game`/`--device` 参数
 - 移除 `is_mobile_source()`、`is_mobile_target()` 及相关 ADB 管理代码
 
 ---
@@ -88,5 +96,5 @@
 ### 技术栈
 
 - Python 3.10+, PyTorch 2.0+, MobileNetV3-Small (576 维特征)
-- PySide6 GUI, OpenCV, mss, pynput, scrcpy + ADB
+- PySide6 GUI, OpenCV, mss, pynput, websockets
 - PyInstaller 打包

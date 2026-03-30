@@ -83,7 +83,7 @@ Phase 3 自我实践:
 | 引擎 | 延迟 | 说明 |
 |------|------|------|
 | **E2EEngine** | 毫秒级 | 行为克隆模型推理，MobileNetV3 编码 + MLP 分类 |
-| **DQNEngine** | 毫秒级 | DQN 强化学习模型推理，支持 ADB 触控和 PC 键鼠 |
+| **DQNEngine** | 毫秒级 | DQN 强化学习模型推理，PC 键盘执行 |
 | **LLM Coach** | 秒级 | Claude / OpenAI / DeepSeek / MiniMax 等，用于动作发现和诊断 |
 
 ---
@@ -116,11 +116,7 @@ start.bat
 python main.py record --output recordings/session1 --fps 10
 python main.py record --window "王者荣耀"
 
-# 手机录制（scrcpy + ADB）
-python main.py mobile --check                        # 检查环境
-python main.py mobile --game moba                    # MOBA 预设
-
-# 远程录制 — 局域网直连
+# 远程录制 — 局域网直连（PC 客户端或 Android App 连接）
 python main.py hub                                   # 启动中转服务
 python main.py hub --port 9876 -o recordings/remote  # 指定端口和输出目录
 # 远程设备连接: RemoteCaptureClient.exe ws://本机IP:9876
@@ -135,9 +131,10 @@ python main.py learn-bc recordings/session1 recordings/session2
 # 伪标签扩展
 python main.py expand runs/workshop/exp1/model video1.mp4 video2.mp4
 
-# RL 自对弈
-python main.py self-play --preset wzry                            # 王者荣耀预设
-python main.py self-play --preset wzry --bc-model runs/.../model  # BC 热启动
+# RL 自对弈（通过 RemoteHub 连接远程设备）
+python main.py self-play --preset wzry                                         # 局域网直连
+python main.py self-play --preset wzry --bc-model runs/.../model               # BC 热启动
+python main.py self-play --preset wzry --relay ws://server:9877 --room myroom  # 公网中继
 
 # 评估模型
 python main.py eval runs/workshop/exp1/model --mode stats
@@ -169,9 +166,10 @@ python build_relay.py
 git tag v1.0.0
 git push origin v1.0.0
 # → GitHub Actions 自动打包 → Releases 页面下载：
-#   VisionAgent-v1.0.0-windows.zip        (主程序)
+#   VisionAgent-v1.0.0-windows.zip         (主程序)
 #   RemoteCaptureClient-v1.0.0-windows.exe (远程采集客户端)
 #   RelayServer-v1.0.0-windows.exe         (公网中继服务)
+#   VisionAgentClient-v1.0.0-debug.apk    (Android 客户端)
 ```
 
 ---
@@ -261,6 +259,7 @@ RemoteCaptureClient.exe ws://192.168.1.100:9876 --window "王者荣耀" --fps 15
 
 - **远程录制训练**：在远程设备操作游戏，画面和操作实时传回生成训练数据
 - **Agent 远程操控**：Agent 获取远程画面 → 模型决策 → 控制指令发回远程设备执行
+- **RL 自对弈**：通过 RemoteHub 获取游戏画面 + 发送触控指令，DQN 自对弈训练全流程远程完成
 - **跨网络协作**：通过公网中继，本地和远程设备无需同一局域网
 
 ---
@@ -325,8 +324,7 @@ vision-agent/
 │   ├── core/                               # 视觉编码器 (MobileNetV3)
 │   ├── data/                               # 数据采集与训练
 │   │   ├── game_recorder.py                # PC 录制 (窗口捕获+键鼠)
-│   │   ├── mobile_recorder.py              # 手机录制 (scrcpy+ADB)
-│   │   ├── remote_hub.py                   # 远程中转服务 (服务端)
+│   │   ├── remote_hub.py                   # 远程中转服务 (直连+中继)
 │   │   ├── remote_capture_client.py        # 远程采集客户端 (独立 EXE)
 │   │   ├── remote_recorder.py              # 远程录制器 (通过 hub 录制)
 │   │   ├── e2e_dataset.py                  # E2E 数据集
@@ -339,7 +337,7 @@ vision-agent/
 │   │   └── minimax_mcp.py                  # MiniMax MCP 工具
 │   ├── rl/                                 # 强化学习
 │   │   ├── dqn_agent.py                    # DQN 智能体 (支持 BC 热启动)
-│   │   ├── game_env.py                     # 游戏环境 (scrcpy+ADB)
+│   │   ├── game_env.py                     # 游戏环境 (RemoteHub 画面+控制)
 │   │   ├── reward.py                       # 奖励检测 (血条/死亡/胜负)
 │   │   ├── self_play.py                    # 自对弈循环
 │   │   ├── replay_buffer.py                # 经验回放缓冲区
@@ -380,7 +378,7 @@ vision-agent/
 | 图像处理 | OpenCV |
 | GUI | PySide6 (Qt) |
 | 屏幕捕获 | mss |
-| 输入模拟 | pynput (PC) / ADB (手机) |
+| 输入模拟 | pynput (PC) / AccessibilityService (Android) |
 | 远程通信 | WebSocket (websockets 库，双向帧/事件/控制，支持直连+公网中继) |
 | 视频下载 | yt-dlp (可选，自主学习自动下载) |
 | 打包分发 | PyInstaller |
