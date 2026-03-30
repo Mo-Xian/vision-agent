@@ -21,6 +21,8 @@ import com.google.android.material.textfield.TextInputEditText
 class MainActivity : AppCompatActivity() {
 
     private lateinit var etServerUrl: TextInputEditText
+    private lateinit var etRoomId: TextInputEditText
+    private lateinit var etRelayToken: TextInputEditText
     private lateinit var etFps: TextInputEditText
     private lateinit var etQuality: TextInputEditText
     private lateinit var btnConnect: MaterialButton
@@ -48,6 +50,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         etServerUrl = findViewById(R.id.etServerUrl)
+        etRoomId = findViewById(R.id.etRoomId)
+        etRelayToken = findViewById(R.id.etRelayToken)
         etFps = findViewById(R.id.etFps)
         etQuality = findViewById(R.id.etQuality)
         btnConnect = findViewById(R.id.btnConnect)
@@ -56,9 +60,11 @@ class MainActivity : AppCompatActivity() {
         tvLog = findViewById(R.id.tvLog)
         scrollLog = tvLog.parent as ScrollView
 
-        // 恢复上次的服务器地址
+        // 恢复上次的设置
         val prefs = getSharedPreferences("settings", Context.MODE_PRIVATE)
         prefs.getString("server_url", null)?.let { etServerUrl.setText(it) }
+        prefs.getString("room_id", null)?.let { etRoomId.setText(it) }
+        prefs.getString("relay_token", null)?.let { etRelayToken.setText(it) }
         prefs.getString("fps", null)?.let { etFps.setText(it) }
         prefs.getString("quality", null)?.let { etQuality.setText(it) }
 
@@ -92,6 +98,8 @@ class MainActivity : AppCompatActivity() {
         // 保存设置
         getSharedPreferences("settings", Context.MODE_PRIVATE).edit().apply {
             putString("server_url", url)
+            putString("room_id", etRoomId.text?.toString())
+            putString("relay_token", etRelayToken.text?.toString())
             putString("fps", etFps.text?.toString())
             putString("quality", etQuality.text?.toString())
             apply()
@@ -107,6 +115,8 @@ class MainActivity : AppCompatActivity() {
         val url = etServerUrl.text?.toString()?.trim() ?: return
         val fps = etFps.text?.toString()?.toIntOrNull() ?: 10
         val quality = etQuality.text?.toString()?.toIntOrNull() ?: 70
+        val roomId = etRoomId.text?.toString()?.trim() ?: ""
+        val relayToken = etRelayToken.text?.toString()?.trim() ?: ""
 
         val intent = Intent(this, CaptureService::class.java).apply {
             putExtra(CaptureService.EXTRA_RESULT_CODE, resultCode)
@@ -114,6 +124,8 @@ class MainActivity : AppCompatActivity() {
             putExtra(CaptureService.EXTRA_SERVER_URL, url)
             putExtra(CaptureService.EXTRA_FPS, fps)
             putExtra(CaptureService.EXTRA_QUALITY, quality)
+            putExtra(CaptureService.EXTRA_ROOM_ID, roomId)
+            putExtra(CaptureService.EXTRA_RELAY_TOKEN, relayToken)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -125,7 +137,8 @@ class MainActivity : AppCompatActivity() {
         isCapturing = true
         btnConnect.text = "停止采集"
         updateStatus("采集中 → $url", true)
-        appendLog("[采集] 服务已启动: $url (FPS=$fps, Q=$quality)")
+        val modeStr = if (roomId.isNotEmpty()) "中继 房间=$roomId" else "直连"
+        appendLog("[采集] 服务已启动: $url ($modeStr, FPS=$fps, Q=$quality)")
         setInputEnabled(false)
     }
 
@@ -170,6 +183,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun setInputEnabled(enabled: Boolean) {
         etServerUrl.isEnabled = enabled
+        etRoomId.isEnabled = enabled
+        etRelayToken.isEnabled = enabled
         etFps.isEnabled = enabled
         etQuality.isEnabled = enabled
     }

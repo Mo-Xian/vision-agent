@@ -3,12 +3,13 @@
 接收远程客户端推送的画面和键鼠事件，提供给录制和 Agent 模块使用。
 同时转发 Agent 的控制指令到远程客户端执行。
 
-架构:
-    远程 PC (客户端)  ──WebSocket──>  Vision Agent 主机 (中转服务)
-        画面帧 + 键鼠事件 ───>  录制 / 训练
-        <─── 控制指令（Agent 操控）
+支持两种模式:
+    直连模式（默认）:
+        远程客户端  --ws-->  Vision Agent 主机 (WebSocket Server)
+    中继模式:
+        Vision Agent --ws-->  公网 Relay  <--ws-- 远程客户端
 
-协议（与 remote_capture_client 对应）:
+协议（与 remote_capture_client / Android App 对应）:
     客户端 → 中转:
         文本 JSON: {"type":"meta", "fps":10, "width":1920, "height":1080}
         文本 JSON: {"type":"key_down", "time":1.23, "key":"a"} 等事件
@@ -21,6 +22,7 @@ import asyncio
 import json
 import logging
 import queue
+import secrets
 import socket
 import struct
 import threading
@@ -34,18 +36,33 @@ logger = logging.getLogger(__name__)
 class RemoteHub:
     """WebSocket 中转服务 — 接收远程客户端画面，提供 Agent 控制通道。
 
-    用法:
+    用法（直连模式）:
         hub = RemoteHub(port=9876)
-        hub.start()                    # 非阻塞启动
-        # 等待客户端连接...
-        frame = hub.get_frame()        # 获取最新画面
-        events = hub.get_events()      # 获取待处理事件
-        hub.send_command({"cmd":"key_tap", "key":"a"})  # 发送控制指令
+        hub.start()
+
+    用法（中继模式）:
+        hub = RemoteHub(relay_url="ws://my-server.com:9877", room_id="abc123")
+        hub.start()
+
+    公共接口:
+        frame = hub.get_frame()
+        events = hub.get_events()
+        hub.send_command({"cmd":"key_tap", "key":"a"})
         hub.stop()
     """
 
-    def __init__(self, port: int = 9876, on_log=None):
+    def __init__(
+        self,
+        port: int = 9876,
+        relay_url: str = "",
+        room_id: str = "",
+        relay_token: str = "",
+        on_log=None,
+    ):
         self.port = port
+        self.relay_url = relay_url.strip()
+        self.room_id = room_id.strip() or secrets.token_hex(4)
+        self.relay_token = relay_token.strip()
         self._on_log = on_log
 
         self._running = False
@@ -63,10 +80,14 @@ class RemoteHub:
         self._frame_lock = threading.Lock()
         self._event_queue: queue.Queue = queue.Queue(maxsize=10000)
 
+    @property
+    def is_relay_mode(self) -> bool:
+        return bool(self.relay_url)
+
     # ── 公开接口 ──
 
     def start(self):
-        """启动中转服务（非阻塞）。"""
+        """启动（非阻塞）。"""
         if self._running:
             return
         self._running = True
@@ -74,7 +95,7 @@ class RemoteHub:
         self._server_thread.start()
 
     def stop(self):
-        """停止中转服务。"""
+        """停止。"""
         self._running = False
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -161,7 +182,7 @@ class RemoteHub:
     # ── 内部实现 ──
 
     async def _async_send(self, data: str):
-        """异步发送消息到客户端。"""
+        """异步发送消息到客户端（直连）或通过中继转发。"""
         if self._client_ws:
             try:
                 await self._client_ws.send(data)
@@ -173,13 +194,18 @@ class RemoteHub:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(self._serve())
+            if self.is_relay_mode:
+                self._loop.run_until_complete(self._relay_connect())
+            else:
+                self._loop.run_until_complete(self._serve())
         except Exception as e:
             if self._running:
                 self._log(f"[中转服务] 异常退出: {e}")
         finally:
             self._loop.close()
             self._loop = None
+
+    # ── 直连模式（本地 WebSocket Server） ──
 
     async def _serve(self):
         import websockets
@@ -227,6 +253,67 @@ class RemoteHub:
             self._client_addr = ""
             self._client_connected.clear()
             self._log(f"[中转服务] 客户端已断开: {addr_str}")
+
+    # ── 中继模式（连接公网 Relay） ──
+
+    async def _relay_connect(self):
+        """连接公网中继，自动重连。"""
+        import websockets
+
+        while self._running:
+            try:
+                self._log(f"[中继] 连接: {self.relay_url}  房间: {self.room_id}")
+                async with websockets.connect(
+                    self.relay_url, max_size=10_000_000, open_timeout=10,
+                ) as ws:
+                    # 注册为 hub
+                    reg = {"cmd": "join", "room": self.room_id, "role": "hub"}
+                    if self.relay_token:
+                        reg["token"] = self.relay_token
+                    await ws.send(json.dumps(reg))
+
+                    # 等待确认
+                    resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                    if resp.get("event") == "error":
+                        self._log(f"[中继] 注册失败: {resp.get('msg')}")
+                        return
+                    if resp.get("event") != "joined":
+                        self._log(f"[中继] 意外响应: {resp}")
+                        return
+
+                    self._log(f"[中继] 已加入房间 {self.room_id}，等待客户端...")
+                    self._client_ws = ws
+                    self._client_addr = f"relay:{self.room_id}"
+
+                    # 消息循环
+                    async for msg in ws:
+                        if not self._running:
+                            break
+                        if isinstance(msg, str):
+                            data = json.loads(msg)
+                            evt = data.get("event", "")
+                            if evt == "paired":
+                                self._client_connected.set()
+                                self._log(f"[中继] 客户端已连接（通过中继）")
+                                continue
+                            if evt == "peer_left":
+                                self._client_connected.clear()
+                                self._log(f"[中继] 客户端已断开")
+                                continue
+                            # 普通文本消息（meta / 键鼠事件）
+                            self._handle_text(msg)
+                        elif isinstance(msg, bytes):
+                            self._handle_frame(msg)
+
+            except Exception as e:
+                if not self._running:
+                    break
+                self._log(f"[中继] 连接断开: {e}，5 秒后重连...")
+                self._client_ws = None
+                self._client_connected.clear()
+                await asyncio.sleep(5)
+
+    # ── 消息处理（直连 / 中继共用） ──
 
     def _handle_frame(self, msg: bytes):
         """处理二进制帧消息：8字节时间戳 + JPEG。"""

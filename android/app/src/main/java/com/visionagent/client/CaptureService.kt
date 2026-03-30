@@ -35,6 +35,8 @@ class CaptureService : Service() {
         const val EXTRA_SERVER_URL = "server_url"
         const val EXTRA_FPS = "fps"
         const val EXTRA_QUALITY = "quality"
+        const val EXTRA_ROOM_ID = "room_id"
+        const val EXTRA_RELAY_TOKEN = "relay_token"
 
         var instance: CaptureService? = null
             private set
@@ -92,11 +94,16 @@ class CaptureService : Service() {
         val captureW = (screenWidth * scale).toInt() and 0xFFFE  // 偶数
         val captureH = (screenHeight * scale).toInt() and 0xFFFE
 
+        val roomId = intent.getStringExtra(EXTRA_ROOM_ID) ?: ""
+        val relayToken = intent.getStringExtra(EXTRA_RELAY_TOKEN) ?: ""
+
         // 建立 WebSocket 连接
         hubConnection = HubConnection(
             serverUrl = serverUrl,
             fps = fps,
             jpegQuality = quality,
+            roomId = roomId,
+            relayToken = relayToken,
             onLog = { msg -> android.util.Log.i("CaptureService", msg) },
             onStatusChange = {},
             onControl = { cmd -> ControlService.instance?.executeControl(cmd) },

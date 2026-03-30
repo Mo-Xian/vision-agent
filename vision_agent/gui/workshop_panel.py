@@ -227,27 +227,69 @@ class WorkshopPanel(QWidget):
         remote_layout.setContentsMargins(0, 0, 0, 0)
         remote_layout.setSpacing(4)
 
-        hub_row = QHBoxLayout()
-        hub_row.addWidget(QLabel("端口"))
+        # 连接方式切换
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("连接"))
+        self.remote_mode_combo = QComboBox()
+        self.remote_mode_combo.addItems(["局域网直连", "公网中继"])
+        self.remote_mode_combo.currentIndexChanged.connect(self._on_remote_mode_changed)
+        mode_row.addWidget(self.remote_mode_combo, 1)
+        remote_layout.addLayout(mode_row)
+
+        # 直连控件
+        self.direct_widget = QWidget()
+        direct_layout = QHBoxLayout(self.direct_widget)
+        direct_layout.setContentsMargins(0, 0, 0, 0)
+        direct_layout.addWidget(QLabel("端口"))
         self.remote_port_spin = QSpinBox()
         self.remote_port_spin.setRange(1, 65535)
         self.remote_port_spin.setValue(9876)
         self.remote_port_spin.setMaximumWidth(70)
-        hub_row.addWidget(self.remote_port_spin)
+        direct_layout.addWidget(self.remote_port_spin)
+        remote_layout.addWidget(self.direct_widget)
+
+        # 中继控件
+        self.relay_widget = QWidget()
+        relay_layout = QVBoxLayout(self.relay_widget)
+        relay_layout.setContentsMargins(0, 0, 0, 0)
+        relay_layout.setSpacing(4)
+        relay_r1 = QHBoxLayout()
+        relay_r1.addWidget(QLabel("中继"))
+        self.relay_url_input = QLineEdit()
+        self.relay_url_input.setPlaceholderText("ws://你的公网服务器:9877")
+        relay_r1.addWidget(self.relay_url_input, 1)
+        relay_layout.addLayout(relay_r1)
+        relay_r2 = QHBoxLayout()
+        relay_r2.addWidget(QLabel("房间"))
+        self.relay_room_input = QLineEdit()
+        self.relay_room_input.setPlaceholderText("自动生成（或手动指定）")
+        self.relay_room_input.setMaximumWidth(120)
+        relay_r2.addWidget(self.relay_room_input)
+        relay_r2.addWidget(QLabel("Token"))
+        self.relay_token_input = QLineEdit()
+        self.relay_token_input.setPlaceholderText("可选")
+        self.relay_token_input.setMaximumWidth(100)
+        relay_r2.addWidget(self.relay_token_input)
+        relay_layout.addLayout(relay_r2)
+        remote_layout.addWidget(self.relay_widget)
+        self.relay_widget.setVisible(False)
+
+        # 启动/停止
+        hub_btn_row = QHBoxLayout()
         self.start_hub_btn = QPushButton("启动中转服务")
         self.start_hub_btn.setObjectName("startBtn")
         self.start_hub_btn.clicked.connect(self._start_hub)
-        hub_row.addWidget(self.start_hub_btn)
+        hub_btn_row.addWidget(self.start_hub_btn)
         self.stop_hub_btn = QPushButton("停止")
         self.stop_hub_btn.setObjectName("stopBtn")
         self.stop_hub_btn.setMaximumWidth(50)
         self.stop_hub_btn.setEnabled(False)
         self.stop_hub_btn.clicked.connect(self._stop_hub)
-        hub_row.addWidget(self.stop_hub_btn)
-        remote_layout.addLayout(hub_row)
+        hub_btn_row.addWidget(self.stop_hub_btn)
+        remote_layout.addLayout(hub_btn_row)
 
         self.remote_status = QLabel(
-            "启动中转服务后，远程客户端连接此地址即可推送画面"
+            "启动后，远程客户端连接即可推送画面"
         )
         self.remote_status.setWordWrap(True)
         self.remote_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
@@ -539,34 +581,69 @@ class WorkshopPanel(QWidget):
         """返回当前 RemoteHub 实例（未启动则返回 None）。"""
         return getattr(self, '_remote_hub', None)
 
+    def _on_remote_mode_changed(self, index: int):
+        self.direct_widget.setVisible(index == 0)
+        self.relay_widget.setVisible(index == 1)
+        if index == 0:
+            self.start_hub_btn.setText("启动中转服务")
+        else:
+            self.start_hub_btn.setText("连接中继")
+
     def _start_hub(self):
         from ..data.remote_hub import RemoteHub
-        port = self.get_hub_port()
-        self._remote_hub = RemoteHub(
-            port=port,
-            on_log=lambda msg: self.remote_status.setText(msg.split("] ", 1)[-1]),
-        )
-        self._remote_hub.start()
-        local_ip = self._remote_hub.get_local_ip()
-        self.remote_status.setText(
-            f"中转服务已启动: ws://{local_ip}:{port}\n"
-            f"请在远程 PC 运行客户端连接此地址"
-        )
+        is_relay = self.remote_mode_combo.currentIndex() == 1
+
+        if is_relay:
+            relay_url = self.relay_url_input.text().strip()
+            if not relay_url:
+                self.remote_status.setText("请输入中继服务器地址")
+                self.remote_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
+                return
+            if not relay_url.startswith("ws://") and not relay_url.startswith("wss://"):
+                relay_url = f"ws://{relay_url}"
+            room_id = self.relay_room_input.text().strip()
+            token = self.relay_token_input.text().strip()
+            self._remote_hub = RemoteHub(
+                relay_url=relay_url,
+                room_id=room_id,
+                relay_token=token,
+                on_log=lambda msg: self.remote_status.setText(msg.split("] ", 1)[-1]),
+            )
+            self._remote_hub.start()
+            # 显示实际 room_id（可能是自动生成的）
+            self.relay_room_input.setText(self._remote_hub.room_id)
+            self.remote_status.setText(
+                f"正在连接中继: {relay_url}\n"
+                f"房间: {self._remote_hub.room_id}  （客户端用此房间号连接）"
+            )
+        else:
+            port = self.get_hub_port()
+            self._remote_hub = RemoteHub(
+                port=port,
+                on_log=lambda msg: self.remote_status.setText(msg.split("] ", 1)[-1]),
+            )
+            self._remote_hub.start()
+            local_ip = self._remote_hub.get_local_ip()
+            self.remote_status.setText(
+                f"中转服务已启动: ws://{local_ip}:{port}\n"
+                f"请在远程设备连接此地址"
+            )
+
         self.remote_status.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px;")
         self.start_hub_btn.setEnabled(False)
         self.stop_hub_btn.setEnabled(True)
-        self.remote_port_spin.setEnabled(False)
+        self.remote_mode_combo.setEnabled(False)
 
     def _stop_hub(self):
         hub = getattr(self, '_remote_hub', None)
         if hub:
             hub.stop()
             self._remote_hub = None
-        self.remote_status.setText("中转服务已停止")
+        self.remote_status.setText("已停止")
         self.remote_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
         self.start_hub_btn.setEnabled(True)
         self.stop_hub_btn.setEnabled(False)
-        self.remote_port_spin.setEnabled(True)
+        self.remote_mode_combo.setEnabled(True)
 
     # ── 窗口管理 ──
 

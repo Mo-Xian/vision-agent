@@ -212,12 +212,27 @@ def cmd_hub(args):
     from vision_agent.data.remote_recorder import RemoteRecorder
     import time
 
-    hub = RemoteHub(port=args.port, on_log=lambda msg: print(msg))
+    relay_url = getattr(args, 'relay', '') or ''
+    room_id = getattr(args, 'room', '') or ''
+    token = getattr(args, 'token', '') or ''
+
+    hub = RemoteHub(
+        port=args.port,
+        relay_url=relay_url,
+        room_id=room_id,
+        relay_token=token,
+        on_log=lambda msg: print(msg),
+    )
     hub.start()
 
-    local_ip = hub.get_local_ip()
-    print(f"\n中转服务已启动: ws://{local_ip}:{args.port}")
-    print(f"请在远程 PC 运行客户端连接此地址")
+    if hub.is_relay_mode:
+        print(f"\n已连接公网中继: {relay_url}")
+        print(f"房间: {hub.room_id}")
+        print(f"远程客户端连接: {relay_url}  房间={hub.room_id}")
+    else:
+        local_ip = hub.get_local_ip()
+        print(f"\n中转服务已启动: ws://{local_ip}:{args.port}")
+        print(f"请在远程设备连接此地址")
     print(f"等待远程客户端连接...")
     print(f"按 Ctrl+C 停止\n")
 
@@ -373,6 +388,9 @@ def main():
     p_hub = sub.add_parser("hub", help="启动中转服务，等待远程客户端连接并录制")
     p_hub.add_argument("-p", "--port", type=int, default=9876, help="中转服务端口 (默认: 9876)")
     p_hub.add_argument("-o", "--output", default="recordings/remote", help="输出目录")
+    p_hub.add_argument("--relay", default="", help="公网中继地址 (如 ws://my-server:9877)")
+    p_hub.add_argument("--room", default="", help="中继房间 ID (留空自动生成)")
+    p_hub.add_argument("--token", default="", help="中继 token (可选)")
 
     # learn-bc 子命令（行为克隆）
     p_bc = sub.add_parser("learn-bc", help="从录制数据学习（行为克隆，推荐）")

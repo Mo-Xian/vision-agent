@@ -95,27 +95,69 @@ class SelfPlayPanel(QWidget):
         rem_layout.setContentsMargins(0, 0, 0, 0)
         rem_layout.setSpacing(4)
 
-        rhub_row = QHBoxLayout()
-        rhub_row.addWidget(QLabel("端口"))
+        # 连接方式
+        rmode_row = QHBoxLayout()
+        rmode_row.addWidget(QLabel("连接"))
+        self.remote_agent_mode = QComboBox()
+        self.remote_agent_mode.addItems(["局域网直连", "公网中继"])
+        self.remote_agent_mode.currentIndexChanged.connect(self._on_agent_remote_mode_changed)
+        rmode_row.addWidget(self.remote_agent_mode, 1)
+        rem_layout.addLayout(rmode_row)
+
+        # 直连
+        self.agent_direct_widget = QWidget()
+        ad_layout = QHBoxLayout(self.agent_direct_widget)
+        ad_layout.setContentsMargins(0, 0, 0, 0)
+        ad_layout.addWidget(QLabel("端口"))
         self.remote_agent_port = QSpinBox()
         self.remote_agent_port.setRange(1, 65535)
         self.remote_agent_port.setValue(9876)
         self.remote_agent_port.setMaximumWidth(70)
-        rhub_row.addWidget(self.remote_agent_port)
+        ad_layout.addWidget(self.remote_agent_port)
+        rem_layout.addWidget(self.agent_direct_widget)
+
+        # 中继
+        self.agent_relay_widget = QWidget()
+        ar_layout = QVBoxLayout(self.agent_relay_widget)
+        ar_layout.setContentsMargins(0, 0, 0, 0)
+        ar_layout.setSpacing(4)
+        ar1 = QHBoxLayout()
+        ar1.addWidget(QLabel("中继"))
+        self.agent_relay_url = QLineEdit()
+        self.agent_relay_url.setPlaceholderText("ws://你的公网服务器:9877")
+        ar1.addWidget(self.agent_relay_url, 1)
+        ar_layout.addLayout(ar1)
+        ar2 = QHBoxLayout()
+        ar2.addWidget(QLabel("房间"))
+        self.agent_relay_room = QLineEdit()
+        self.agent_relay_room.setPlaceholderText("自动生成")
+        self.agent_relay_room.setMaximumWidth(120)
+        ar2.addWidget(self.agent_relay_room)
+        ar2.addWidget(QLabel("Token"))
+        self.agent_relay_token = QLineEdit()
+        self.agent_relay_token.setPlaceholderText("可选")
+        self.agent_relay_token.setMaximumWidth(100)
+        ar2.addWidget(self.agent_relay_token)
+        ar_layout.addLayout(ar2)
+        rem_layout.addWidget(self.agent_relay_widget)
+        self.agent_relay_widget.setVisible(False)
+
+        # 按钮
+        rhub_btn_row = QHBoxLayout()
         self.start_agent_hub_btn = QPushButton("启动中转服务")
         self.start_agent_hub_btn.setObjectName("startBtn")
         self.start_agent_hub_btn.clicked.connect(self._start_agent_hub)
-        rhub_row.addWidget(self.start_agent_hub_btn)
+        rhub_btn_row.addWidget(self.start_agent_hub_btn)
         self.stop_agent_hub_btn = QPushButton("停止")
         self.stop_agent_hub_btn.setObjectName("stopBtn")
         self.stop_agent_hub_btn.setMaximumWidth(50)
         self.stop_agent_hub_btn.setEnabled(False)
         self.stop_agent_hub_btn.clicked.connect(self._stop_agent_hub)
-        rhub_row.addWidget(self.stop_agent_hub_btn)
-        rem_layout.addLayout(rhub_row)
+        rhub_btn_row.addWidget(self.stop_agent_hub_btn)
+        rem_layout.addLayout(rhub_btn_row)
 
         self.remote_agent_status = QLabel(
-            "启动中转服务后，远程客户端连接此地址，Agent 通过中转获取画面并发送操控指令"
+            "启动后，远程设备连接即可，Agent 获取画面并发送操控指令"
         )
         self.remote_agent_status.setWordWrap(True)
         self.remote_agent_status.setStyleSheet(
@@ -269,38 +311,69 @@ class SelfPlayPanel(QWidget):
     def get_agent_hub_port(self) -> int:
         return self.remote_agent_port.value()
 
+    def _on_agent_remote_mode_changed(self, index: int):
+        self.agent_direct_widget.setVisible(index == 0)
+        self.agent_relay_widget.setVisible(index == 1)
+        self.start_agent_hub_btn.setText("启动中转服务" if index == 0 else "连接中继")
+
     def _start_agent_hub(self):
         from ..data.remote_hub import RemoteHub
-        port = self.get_agent_hub_port()
-        self._agent_hub = RemoteHub(
-            port=port,
-            on_log=lambda msg: self.remote_agent_status.setText(msg.split("] ", 1)[-1]),
-        )
-        self._agent_hub.start()
-        local_ip = self._agent_hub.get_local_ip()
-        self.remote_agent_status.setText(
-            f"中转服务已启动: ws://{local_ip}:{port}\n"
-            f"请在远程 PC 运行客户端连接此地址"
-        )
+        is_relay = self.remote_agent_mode.currentIndex() == 1
+
+        if is_relay:
+            relay_url = self.agent_relay_url.text().strip()
+            if not relay_url:
+                self.remote_agent_status.setText("请输入中继服务器地址")
+                self.remote_agent_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+                return
+            if not relay_url.startswith("ws://") and not relay_url.startswith("wss://"):
+                relay_url = f"ws://{relay_url}"
+            room_id = self.agent_relay_room.text().strip()
+            token = self.agent_relay_token.text().strip()
+            self._agent_hub = RemoteHub(
+                relay_url=relay_url,
+                room_id=room_id,
+                relay_token=token,
+                on_log=lambda msg: self.remote_agent_status.setText(msg.split("] ", 1)[-1]),
+            )
+            self._agent_hub.start()
+            self.agent_relay_room.setText(self._agent_hub.room_id)
+            self.remote_agent_status.setText(
+                f"正在连接中继: {relay_url}\n"
+                f"房间: {self._agent_hub.room_id}"
+            )
+        else:
+            port = self.get_agent_hub_port()
+            self._agent_hub = RemoteHub(
+                port=port,
+                on_log=lambda msg: self.remote_agent_status.setText(msg.split("] ", 1)[-1]),
+            )
+            self._agent_hub.start()
+            local_ip = self._agent_hub.get_local_ip()
+            self.remote_agent_status.setText(
+                f"中转服务已启动: ws://{local_ip}:{port}\n"
+                f"请在远程设备连接此地址"
+            )
+
         self.remote_agent_status.setStyleSheet(
             f"color: {COLORS['success']}; font-size: 11px;"
         )
         self.start_agent_hub_btn.setEnabled(False)
         self.stop_agent_hub_btn.setEnabled(True)
-        self.remote_agent_port.setEnabled(False)
+        self.remote_agent_mode.setEnabled(False)
 
     def _stop_agent_hub(self):
         hub = getattr(self, '_agent_hub', None)
         if hub:
             hub.stop()
             self._agent_hub = None
-        self.remote_agent_status.setText("中转服务已停止")
+        self.remote_agent_status.setText("已停止")
         self.remote_agent_status.setStyleSheet(
             f"color: {COLORS['text_dim']}; font-size: 11px;"
         )
         self.start_agent_hub_btn.setEnabled(True)
         self.stop_agent_hub_btn.setEnabled(False)
-        self.remote_agent_port.setEnabled(True)
+        self.remote_agent_mode.setEnabled(True)
 
     def get_window_title(self) -> str:
         text = self.window_combo.currentText()

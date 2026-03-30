@@ -1,6 +1,6 @@
 """远程采集客户端 — 在远程游戏 PC 上运行。
 
-连接到 Vision Agent 中转服务，推送屏幕画面和键鼠事件，
+连接到 Vision Agent 中转服务（直连或公网中继），推送屏幕画面和键鼠事件，
 同时接收并执行 Agent 发来的控制指令。
 
 远程 PC 只需安装少量依赖即可运行，无需完整的 vision-agent 环境。
@@ -9,9 +9,13 @@
     pip install mss pynput websockets opencv-python-headless numpy
 
 用法:
+    # 局域网直连
     python remote_capture_client.py ws://192.168.1.100:9876
     python remote_capture_client.py ws://192.168.1.100:9876 --fps 15
-    python remote_capture_client.py ws://192.168.1.100:9876 --window "王者荣耀"
+
+    # 公网中继
+    python remote_capture_client.py ws://relay.example.com:9877 --room abc123
+    python remote_capture_client.py ws://relay.example.com:9877 --room abc123 --token xyz
 
 协议:
     客户端 → 中转服务:
@@ -41,11 +45,15 @@ class RemoteCaptureClient:
         fps: int = 10,
         window_title: str = "",
         jpeg_quality: int = 80,
+        room_id: str = "",
+        relay_token: str = "",
     ):
         self.server_url = server_url
         self.fps = fps
         self.window_title = window_title
         self.jpeg_quality = jpeg_quality
+        self.room_id = room_id.strip()
+        self.relay_token = relay_token.strip()
 
         self._running = False
         self._start_time = 0.0
@@ -102,11 +110,33 @@ class RemoteCaptureClient:
                 break
             await asyncio.sleep(0.1)
 
-        print(f"[采集客户端] 连接中转服务: {self.server_url}")
+        print(f"[采集客户端] 连接: {self.server_url}"
+              + (f"  房间: {self.room_id}" if self.room_id else ""))
 
         async with websockets.connect(
             self.server_url, max_size=10_000_000, open_timeout=10
         ) as ws:
+            # 中继模式：先注册
+            if self.room_id:
+                reg = {"cmd": "join", "room": self.room_id, "role": "client"}
+                if self.relay_token:
+                    reg["token"] = self.relay_token
+                await ws.send(json.dumps(reg))
+                resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                if resp.get("event") == "error":
+                    print(f"[采集客户端] 注册失败: {resp.get('msg')}")
+                    return
+                print(f"[采集客户端] 已加入房间 {self.room_id}")
+                # 等待 hub 端就绪（paired 事件），或已经 paired
+                if resp.get("event") != "paired":
+                    print(f"[采集客户端] 等待 Vision Agent 端连接...")
+                    while True:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=300)
+                        data = json.loads(msg)
+                        if data.get("event") == "paired":
+                            break
+                print(f"[采集客户端] 已配对，开始传输!")
+
             self._connected = True
             print(f"[采集客户端] 已连接!")
             print(f"[采集客户端] FPS={self.fps}  画面={self._frame_size[0]}x{self._frame_size[1]}  "
@@ -143,7 +173,12 @@ class RemoteCaptureClient:
                 continue
             try:
                 data = json.loads(msg)
-                if data.get("type") == "error":
+                # 跳过中继事件
+                if data.get("event") in ("paired", "peer_left", "joined"):
+                    if data.get("event") == "peer_left":
+                        print(f"[采集客户端] Vision Agent 端已断开")
+                    continue
+                if data.get("type") == "error" or data.get("event") == "error":
                     print(f"[采集客户端] 服务端拒绝: {data.get('msg')}")
                     return
                 cmd = data.get("cmd", "")
@@ -371,11 +406,13 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="远程采集客户端 — 连接 Vision Agent 中转服务")
     parser.add_argument(
         "server", nargs="?", default="ws://192.168.1.100:9876",
-        help="中转服务地址，如 ws://192.168.1.100:9876",
+        help="中转服务地址（直连或中继），如 ws://192.168.1.100:9876",
     )
     parser.add_argument("--fps", type=int, default=10, help="截屏帧率 (默认 10)")
     parser.add_argument("--window", type=str, default="", help="窗口标题（模糊匹配），留空为全屏")
     parser.add_argument("--quality", type=int, default=80, help="JPEG 质量 1-100 (默认 80)")
+    parser.add_argument("--room", type=str, default="", help="中继房间 ID（使用公网中继时必填）")
+    parser.add_argument("--token", type=str, default="", help="中继 token（可选）")
     args = parser.parse_args()
 
     # 自动补全 ws:// 前缀
@@ -386,7 +423,11 @@ if __name__ == "__main__":
     print("=" * 50)
     print("  Vision Agent 远程采集客户端")
     print("=" * 50)
-    print(f"  中转服务: {server_url}")
+    print(f"  服务地址: {server_url}")
+    if args.room:
+        print(f"  模式: 公网中继  房间: {args.room}")
+    else:
+        print(f"  模式: 局域网直连")
     print(f"  帧率: {args.fps} FPS")
     print(f"  窗口: {args.window or '全屏'}")
     print(f"  JPEG 质量: {args.quality}")
@@ -398,6 +439,8 @@ if __name__ == "__main__":
         fps=args.fps,
         window_title=args.window,
         jpeg_quality=args.quality,
+        room_id=args.room,
+        relay_token=args.token,
     )
     try:
         client.run()
