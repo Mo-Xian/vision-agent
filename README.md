@@ -209,7 +209,7 @@ RemoteCaptureClient.exe ws://192.168.1.100:9876 --window "王者荣耀" --fps 15
 python vision_agent/data/remote_capture_client.py ws://服务端IP:9876
 ```
 
-### 客户端功能
+### PC 客户端功能
 
 | 功能 | 说明 |
 |------|------|
@@ -217,13 +217,32 @@ python vision_agent/data/remote_capture_client.py ws://服务端IP:9876
 | 事件推送 | pynput 监听键盘/鼠标事件 → JSON 推送 |
 | 控制执行 | 接收 Agent 指令：`key_tap`、`key_press`、`key_release`、`mouse_click`、`mouse_move` |
 | 窗口捕获 | `--window "标题"` 模糊匹配指定窗口，不指定则全屏 |
-| 自动重连 | 网络断开后 5 秒自动重连，远程 PC 无感恢复 |
+| 自动重连 | 网络断开后 5 秒自动重连 |
 | 独立部署 | 单文件 EXE（~57MB），无需 Python 环境 |
+
+**3. 客户端（Android 手机）**
+
+无需 USB 调试和 ADB，直接安装 APK 使用。
+
+1. 用 Android Studio 打开 `android/` 目录，构建安装到手机
+2. 输入中转服务地址（如 `ws://192.168.1.100:9876`）
+3. 点击"开始采集" → 授权截屏
+4. （可选）开启无障碍服务 → Agent 可远程控制手机
+
+### Android 客户端功能
+
+| 功能 | 说明 |
+|------|------|
+| 画面采集 | MediaProjection API 截屏（系统弹窗授权，无需 root） |
+| 控制执行 | AccessibilityService 点击/滑动/按键（设置中开启，无需 root） |
+| 通信协议 | WebSocket，与 PC 客户端完全一致 |
+| 自动重连 | 网络断开后 5 秒自动重连 |
+| 要求 | Android 7.0+，与服务端同一局域网 |
 
 ### 支持场景
 
-- **远程录制训练**：在远程 PC 玩游戏，画面和操作实时传回服务端生成训练数据
-- **Agent 远程操控**：服务端 Agent 获取远程画面 → 模型决策 → 控制指令发回远程 PC 执行
+- **远程录制训练**：在远程设备（PC/手机）操作游戏，画面和操作实时传回服务端生成训练数据
+- **Agent 远程操控**：服务端 Agent 获取远程画面 → 模型决策 → 控制指令发回远程设备执行
 
 ---
 
@@ -319,6 +338,12 @@ vision-agent/
 │       ├── train_chart.py                  # 训练曲线图表
 │       ├── styles.py                       # 深色主题
 │       └── widgets.py                      # 通用组件 (折叠区/模型浏览器)
+├── android/                                # Android 客户端 (无需 ADB)
+│   └── app/src/main/java/.../client/
+│       ├── MainActivity.kt                 # 主界面 (地址输入+授权+启停)
+│       ├── CaptureService.kt               # MediaProjection 截屏服务
+│       ├── ControlService.kt               # AccessibilityService 控制执行
+│       └── HubConnection.kt                # WebSocket 通信 (OkHttp)
 └── requirements.txt
 ```
 

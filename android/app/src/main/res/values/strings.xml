@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Vision Agent</string>
+    <string name="accessibility_desc">Vision Agent 远程控制服务，接收服务端 Agent 的操控指令（点击、滑动等）在本机执行。</string>
+</resources>
