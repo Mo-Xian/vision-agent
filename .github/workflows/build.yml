@@ -75,7 +75,7 @@ jobs:
           cat release_notes.md
         shell: bash
 
-      - name: Upload artifact
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: VisionAgent-windows
@@ -84,6 +84,58 @@ jobs:
             RemoteCaptureClient-${{ github.ref_name }}-windows.exe
             RelayServer-${{ github.ref_name }}-windows.exe
 
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release_notes.md
+
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build Android APK
+        working-directory: android
+        run: |
+          chmod +x gradlew 2>/dev/null || true
+          gradle assembleRelease assembleDebug
+
+      - name: Copy APK
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk VisionAgentClient-${{ github.ref_name }}-debug.apk
+          if [ -f android/app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk VisionAgentClient-${{ github.ref_name }}-release.apk
+          fi
+        shell: bash
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: VisionAgent-android
+          path: VisionAgentClient-*.apk
+
+  release:
+    needs: [build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -91,6 +143,9 @@ jobs:
             VisionAgent-${{ github.ref_name }}-windows.zip
             RemoteCaptureClient-${{ github.ref_name }}-windows.exe
             RelayServer-${{ github.ref_name }}-windows.exe
+            VisionAgentClient-${{ github.ref_name }}-debug.apk
+            VisionAgentClient-${{ github.ref_name }}-release.apk
           body_path: release_notes.md
           draft: false
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') }}
+          fail_on_unmatched_files: false
