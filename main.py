@@ -5,15 +5,11 @@
     python main.py record --output recordings/session1 --fps 10
     python main.py record --window "王者荣耀"  # 窗口捕获
 
-    # 手机游戏录制（scrcpy + ADB）
-    python main.py mobile --game moba                    # MOBA 默认区域
-    python main.py mobile --zones touch_zones.json       # 自定义区域
-    python main.py mobile --check                        # 检查环境
-
-    # 远程 PC 录制（服务端-客户端架构）
+    # 远程设备录制（中转服务 + 客户端）
     python main.py hub                                   # 本机启动中转服务，等待客户端连接并录制
     python main.py hub --port 9876 -o recordings/remote  # 指定端口和输出目录
-    # 远程 PC 运行客户端: RemoteCaptureClient.exe ws://本机IP:9876
+    python main.py hub --relay ws://server:9877 --room myroom  # 通过公网中继
+    # 远程设备运行客户端: RemoteCaptureClient.exe 或 Android App
 
     # 从录制数据学习
     python main.py learn-bc recordings/session1 recordings/session2
@@ -24,7 +20,6 @@
     # RL 自对弈学习
     python main.py self-play --preset wzry                          # 王者荣耀内置预设
     python main.py self-play --preset wzry --bc-model runs/.../model  # BC 热启动
-    python main.py self-play --game moba --zones zones.json         # 自定义
 
     # 评估模型
     python main.py eval runs/workshop/exp1/model --video video.mp4
@@ -153,59 +148,6 @@ def cmd_expand(args):
         sys.exit(1)
 
 
-def cmd_mobile(args):
-    """手机游戏录制（scrcpy + ADB）。"""
-    from vision_agent.data.mobile_recorder import MobileRecorder
-
-    if args.check:
-        ok, msgs = MobileRecorder.check_prerequisites()
-        for m in msgs:
-            print(m)
-        if ok:
-            print("\n环境检查通过，可以开始录制!")
-        else:
-            print("\n环境检查未通过，请根据上方提示修复。")
-            sys.exit(1)
-        return
-
-    # 加载触控区域
-    zones = None
-    if args.zones:
-        import json
-        with open(args.zones, "r", encoding="utf-8") as f:
-            zones = json.load(f)
-        print(f"已加载触控区域配置: {args.zones}")
-    elif args.game:
-        zones = MobileRecorder.create_default_zones(args.game)
-        print(f"使用 {args.game} 默认触控区域")
-
-    recorder = MobileRecorder(
-        output_dir=args.output,
-        fps=args.fps,
-        zones=zones,
-        device_serial=args.device,
-        on_log=lambda msg: print(msg),
-    )
-
-    print(f"开始手机录制... (FPS={args.fps})")
-    print("按 Ctrl+C 停止")
-    recorder.start()
-
-    try:
-        import time
-        while recorder.is_recording:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        pass
-
-    stats = recorder.stop()
-    print(f"\n录制完成!")
-    print(f"  帧数: {stats.total_frames}")
-    print(f"  时长: {stats.duration_sec:.0f}s")
-    print(f"  触控事件: {stats.total_events}")
-    print(f"  输出: {stats.output_dir}")
-
-
 def cmd_hub(args):
     """启动中转服务并录制远程客户端画面。"""
     from vision_agent.data.remote_hub import RemoteHub
@@ -296,19 +238,8 @@ def cmd_self_play(args):
         dqn_params = {}
         bc_model = args.bc_model
         output = args.output
-    elif args.game:
-        from vision_agent.data.mobile_recorder import MobileRecorder
-        raw_zones = MobileRecorder.create_default_zones(args.game)
-        action_zones = [{"name": "idle"}]
-        for name, zone in raw_zones.items():
-            action_zones.append({"name": name, **zone})
-        from vision_agent.rl.reward import RewardConfig
-        reward_config = RewardConfig()
-        dqn_params = {}
-        bc_model = args.bc_model
-        output = args.output
     else:
-        print("错误: 需要指定 --preset、--game 或 --zones")
+        print("错误: 需要指定 --preset 或 --zones")
         sys.exit(1)
 
     print(f"动作空间: {[z['name'] for z in action_zones]}")
@@ -319,7 +250,6 @@ def cmd_self_play(args):
         action_zones=action_zones,
         bc_model_dir=bc_model,
         output_dir=output,
-        device_serial=args.device,
         reward_config=reward_config,
         start_model_path=start_model,
         lr=dqn_params.get("lr", args.lr),
@@ -375,15 +305,6 @@ def main():
     p_rec.add_argument("--hotkey", default="f9", help="暂停/恢复快捷键 (默认: F9)")
     p_rec.add_argument("--list-windows", action="store_true", help="列出所有可见窗口标题")
 
-    # mobile 子命令（手机录制）
-    p_mob = sub.add_parser("mobile", help="手机游戏录制（scrcpy + ADB）")
-    p_mob.add_argument("-o", "--output", default="recordings/mobile", help="输出目录")
-    p_mob.add_argument("--fps", type=int, default=10, help="截屏帧率 (默认: 10)")
-    p_mob.add_argument("-g", "--game", default="", help="游戏预设 (moba/fps)")
-    p_mob.add_argument("-z", "--zones", default="", help="触控区域 JSON 文件路径")
-    p_mob.add_argument("-d", "--device", default="", help="ADB 设备序列号（多设备时指定）")
-    p_mob.add_argument("--check", action="store_true", help="检查环境（adb/scrcpy/设备）")
-
     # hub 子命令（启动中转服务 + 录制远程客户端）
     p_hub = sub.add_parser("hub", help="启动中转服务，等待远程客户端连接并录制")
     p_hub.add_argument("-p", "--port", type=int, default=9876, help="中转服务端口 (默认: 9876)")
@@ -418,11 +339,9 @@ def main():
     # self-play 子命令（RL 自对弈）
     p_sp = sub.add_parser("self-play", help="RL 自对弈学习（可从 BC 模型热启动）")
     p_sp.add_argument("-p", "--preset", default="", help="游戏预设 (wzry/moba) 或 YAML 文件路径")
-    p_sp.add_argument("-g", "--game", default="", help="游戏类型 (moba/fps)")
     p_sp.add_argument("-z", "--zones", default="", help="触控区域 JSON 文件路径")
     p_sp.add_argument("--bc-model", default="", help="BC 预训练模型目录（热启动）")
     p_sp.add_argument("-o", "--output", default="runs/selfplay/exp1", help="输出目录")
-    p_sp.add_argument("-d", "--device", default="", help="ADB 设备序列号")
     p_sp.add_argument("--fps", type=int, default=5, help="决策帧率 (默认: 5)")
     p_sp.add_argument("--lr", type=float, default=0.0005, help="学习率")
     p_sp.add_argument("--gamma", type=float, default=0.99, help="折扣因子")
@@ -448,8 +367,6 @@ def main():
 
     if args.command == "record":
         cmd_record(args)
-    elif args.command == "mobile":
-        cmd_mobile(args)
     elif args.command == "hub":
         cmd_hub(args)
     elif args.command == "learn-bc":

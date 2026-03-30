@@ -621,7 +621,7 @@ class MainWindow(QMainWindow):
             from ..decision.dqn_engine import DQNEngine
             engine = DQNEngine(
                 model_dir=model_dir,
-                touch_zones=preset.get("action_zones", []),
+                action_key_map=preset.get("action_key_map", {}),
                 execute_actions=False,
             )
             engine_label = "DQN"
