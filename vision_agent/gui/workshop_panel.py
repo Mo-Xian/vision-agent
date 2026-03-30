@@ -241,6 +241,24 @@ class WorkshopPanel(QWidget):
         dev_row.addWidget(self.refresh_devices_btn)
         mob_layout.addLayout(dev_row)
 
+        wifi_row = QHBoxLayout()
+        wifi_row.addWidget(QLabel("WiFi"))
+        self.mobile_wifi_ip = QLineEdit()
+        self.mobile_wifi_ip.setPlaceholderText("手机 IP，如 192.168.1.50")
+        wifi_row.addWidget(self.mobile_wifi_ip, 1)
+        wifi_row.addWidget(QLabel(":"))
+        self.mobile_wifi_port = QSpinBox()
+        self.mobile_wifi_port.setRange(1, 65535)
+        self.mobile_wifi_port.setValue(5555)
+        self.mobile_wifi_port.setMaximumWidth(70)
+        wifi_row.addWidget(self.mobile_wifi_port)
+        self.mobile_wifi_connect_btn = QPushButton("连接")
+        self.mobile_wifi_connect_btn.setObjectName("browseBtn")
+        self.mobile_wifi_connect_btn.setMaximumWidth(50)
+        self.mobile_wifi_connect_btn.clicked.connect(self._wifi_connect_device)
+        wifi_row.addWidget(self.mobile_wifi_connect_btn)
+        mob_layout.addLayout(wifi_row)
+
         zone_row = QHBoxLayout()
         zone_row.addWidget(QLabel("触控预设"))
         self.touch_zone_combo = QComboBox()
@@ -636,11 +654,53 @@ class WorkshopPanel(QWidget):
                 info = " ".join(parts[2:]) if len(parts) > 2 else ""
                 self.mobile_device_combo.addItem(f"{serial} ({info})" if info else serial, serial)
             count = self.mobile_device_combo.count()
-            self.mobile_status.setText(f"检测到 {count} 个设备" if count else "未检测到设备，请检查 USB 连接")
+            self.mobile_status.setText(f"检测到 {count} 个设备" if count else "未检测到设备，请检查 USB 或 WiFi 连接")
         except FileNotFoundError:
             self.mobile_status.setText("未找到 adb，请安装 Android SDK Platform Tools")
         except Exception as e:
             self.mobile_status.setText(f"检测失败: {e}")
+
+    def _wifi_connect_device(self):
+        """通过 WiFi 连接 ADB 设备。"""
+        ip = self.mobile_wifi_ip.text().strip()
+        if not ip:
+            self.mobile_status.setText("请输入手机 IP 地址")
+            self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
+            return
+
+        port = self.mobile_wifi_port.value()
+        addr = f"{ip}:{port}"
+        self.mobile_status.setText(f"正在连接 {addr}...")
+        self.mobile_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        self.mobile_wifi_connect_btn.setEnabled(False)
+
+        import threading
+
+        def _connect():
+            import subprocess
+            try:
+                r = subprocess.run(
+                    ["adb", "connect", addr],
+                    capture_output=True, text=True, timeout=10,
+                )
+                output = r.stdout.strip() + r.stderr.strip()
+                if "connected" in output.lower():
+                    self.mobile_status.setText(f"WiFi 连接成功: {addr}")
+                    self.mobile_status.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px;")
+                    self._refresh_device_list()
+                else:
+                    self.mobile_status.setText(f"连接失败: {output}")
+                    self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
+            except FileNotFoundError:
+                self.mobile_status.setText("未找到 adb，请安装 Android SDK Platform Tools")
+                self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
+            except Exception as e:
+                self.mobile_status.setText(f"连接失败: {e}")
+                self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
+            finally:
+                self.mobile_wifi_connect_btn.setEnabled(True)
+
+        threading.Thread(target=_connect, daemon=True).start()
 
     # ── 窗口管理 ──
 

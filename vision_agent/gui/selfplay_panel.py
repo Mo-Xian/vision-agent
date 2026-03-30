@@ -84,6 +84,24 @@ class SelfPlayPanel(QWidget):
         dev_row.addWidget(self.refresh_device_btn)
         mob_layout.addLayout(dev_row)
 
+        wifi_row = QHBoxLayout()
+        wifi_row.addWidget(QLabel("WiFi"))
+        self.wifi_ip_input = QLineEdit()
+        self.wifi_ip_input.setPlaceholderText("手机 IP，如 192.168.1.50")
+        wifi_row.addWidget(self.wifi_ip_input, 1)
+        wifi_row.addWidget(QLabel(":"))
+        self.wifi_port_input = QSpinBox()
+        self.wifi_port_input.setRange(1, 65535)
+        self.wifi_port_input.setValue(5555)
+        self.wifi_port_input.setMaximumWidth(70)
+        wifi_row.addWidget(self.wifi_port_input)
+        self.wifi_connect_btn = QPushButton("连接")
+        self.wifi_connect_btn.setObjectName("browseBtn")
+        self.wifi_connect_btn.setMaximumWidth(50)
+        self.wifi_connect_btn.clicked.connect(self._wifi_connect_device)
+        wifi_row.addWidget(self.wifi_connect_btn)
+        mob_layout.addLayout(wifi_row)
+
         status_row = QHBoxLayout()
         self.device_status = QLabel("未连接")
         self.device_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
@@ -441,7 +459,7 @@ class SelfPlayPanel(QWidget):
                 self.device_status.setText(f"发现 {len(lines)} 个设备")
                 self.device_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
             else:
-                self.device_status.setText("未发现设备，请连接手机并开启 USB 调试")
+                self.device_status.setText("未发现设备，请通过 USB 或 WiFi 连接手机")
                 self.device_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 11px;")
         except FileNotFoundError:
             self.device_status.setText(
@@ -451,6 +469,49 @@ class SelfPlayPanel(QWidget):
         except Exception as e:
             self.device_status.setText(f"错误: {e}")
             self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+
+    def _wifi_connect_device(self):
+        """通过 WiFi 连接 ADB 设备。"""
+        ip = self.wifi_ip_input.text().strip()
+        if not ip:
+            self.device_status.setText("请输入手机 IP 地址")
+            self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+            return
+
+        port = self.wifi_port_input.value()
+        addr = f"{ip}:{port}"
+        self.device_status.setText(f"正在连接 {addr}...")
+        self.device_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
+        self.wifi_connect_btn.setEnabled(False)
+
+        import threading
+
+        def _connect():
+            try:
+                adb = self._find_adb()
+                if not adb:
+                    self.device_status.setText("未找到 adb")
+                    self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+                    return
+                r = subprocess.run(
+                    [adb, "connect", addr],
+                    capture_output=True, text=True, timeout=10,
+                )
+                output = r.stdout.strip() + r.stderr.strip()
+                if "connected" in output.lower():
+                    self.device_status.setText(f"WiFi 连接成功: {addr}")
+                    self.device_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
+                    self._refresh_devices()
+                else:
+                    self.device_status.setText(f"连接失败: {output}")
+                    self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+            except Exception as e:
+                self.device_status.setText(f"连接失败: {e}")
+                self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
+            finally:
+                self.wifi_connect_btn.setEnabled(True)
+
+        threading.Thread(target=_connect, daemon=True).start()
 
     def _check_device(self):
         """测试设备连接。"""
