@@ -41,17 +41,18 @@ Phase 3 自我实践:
 
 | 文件 | 用途 |
 |------|------|
-| `main.py` | CLI 入口（record/mobile/learn-bc/expand/self-play/eval） |
+| `main.py` | CLI 入口（record/hub/learn-bc/expand/self-play/eval） |
 | `gui_app.py` | PySide6 GUI 入口 |
 | `vision_agent/core/vision_encoder.py` | MobileNetV3 视觉编码器 |
 | `vision_agent/data/game_recorder.py` | PC 录制器（窗口捕获+键鼠+流式保存） |
-| `vision_agent/data/mobile_recorder.py` | 手机录制器（scrcpy+ADB 触摸采集） |
+| `vision_agent/data/remote_hub.py` | 远程中转服务（直连/公网中继两种模式） |
+| `vision_agent/data/remote_capture_client.py` | 远程采集客户端（PC 端） |
 | `vision_agent/data/e2e_dataset.py` | E2E 数据集 |
 | `vision_agent/data/e2e_trainer.py` | E2E MLP 训练器 |
 | `vision_agent/decision/base.py` | Action + DecisionEngine ABC |
 | `vision_agent/decision/e2e_engine.py` | E2E 推理引擎 |
 | `vision_agent/decision/llm_coach.py` | LLM 教练（动作发现/诊断） |
-| `vision_agent/rl/game_env.py` | 游戏 RL 环境（scrcpy截屏+ADB操作） |
+| `vision_agent/rl/game_env.py` | 游戏 RL 环境（通过 RemoteHub 获取画面+发送指令） |
 | `vision_agent/rl/reward.py` | 奖励检测器（血条/死亡/胜负） |
 | `vision_agent/rl/dqn_agent.py` | DQN 智能体（支持 BC 热启动） |
 | `vision_agent/rl/self_play.py` | 自对弈循环（采集+训练双线程） |
@@ -74,10 +75,9 @@ python gui_app.py
 python main.py record --output recordings/session1 --fps 10
 python main.py record --window "王者荣耀"
 
-# 手机录制（scrcpy + ADB）
-python main.py mobile --check                        # 检查环境
-python main.py mobile --game moba                    # MOBA 预设
-python main.py mobile --zones touch_zones.json       # 自定义区域
+# 远程设备录制（PC 客户端 或 Android App 连接）
+python main.py hub                                                 # 局域网直连
+python main.py hub --relay ws://server:9877 --room myroom          # 公网中继
 
 # 行为克隆训练
 python main.py learn-bc recordings/session1 recordings/session2
@@ -85,10 +85,10 @@ python main.py learn-bc recordings/session1 recordings/session2
 # 伪标签扩展
 python main.py expand runs/workshop/exp1/model video1.mp4 video2.mp4
 
-# RL 自对弈
-python main.py self-play --preset wzry                          # 王者荣耀预设
-python main.py self-play --preset wzry --bc-model runs/.../model  # BC 热启动
-python main.py self-play --game moba                            # 通用 MOBA
+# RL 自对弈（通过 RemoteHub 连接远程设备）
+python main.py self-play --preset wzry                                         # 局域网直连
+python main.py self-play --preset wzry --bc-model runs/.../model               # BC 热启动
+python main.py self-play --preset wzry --relay ws://server:9877 --room myroom  # 公网中继
 
 # 评估模型
 python main.py eval runs/workshop/exp1/model --mode stats

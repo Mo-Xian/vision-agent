@@ -17,9 +17,10 @@
     # 伪标签扩展：用已有模型标注新视频，扩充数据
     python main.py expand runs/workshop/exp1/model video1.mp4 video2.mp4
 
-    # RL 自对弈学习
-    python main.py self-play --preset wzry                          # 王者荣耀内置预设
+    # RL 自对弈学习（需连接远程设备 — Android App 或 PC 客户端）
+    python main.py self-play --preset wzry                          # 局域网直连
     python main.py self-play --preset wzry --bc-model runs/.../model  # BC 热启动
+    python main.py self-play --preset wzry --relay ws://server:9877 --room myroom  # 公网中继
 
     # 评估模型
     python main.py eval runs/workshop/exp1/model --video video.mp4
@@ -213,8 +214,10 @@ def cmd_hub(args):
 
 
 def cmd_self_play(args):
-    """RL 自对弈学习。"""
+    """RL 自对弈学习（通过 RemoteHub 连接远程设备）。"""
     import json as _json
+    import time
+    from vision_agent.data.remote_hub import RemoteHub
     from vision_agent.rl.self_play import SelfPlayLoop
     from vision_agent.rl.preset import load_selfplay_preset
 
@@ -244,12 +247,47 @@ def cmd_self_play(args):
 
     print(f"动作空间: {[z['name'] for z in action_zones]}")
 
+    # 启动 RemoteHub 连接远程设备
+    relay_url = getattr(args, 'relay', '') or ''
+    room_id = getattr(args, 'room', '') or ''
+    token = getattr(args, 'token', '') or ''
+
+    hub = RemoteHub(
+        port=args.port,
+        relay_url=relay_url,
+        room_id=room_id,
+        relay_token=token,
+        on_log=lambda msg: print(msg),
+    )
+    hub.start()
+
+    if hub.is_relay_mode:
+        print(f"\n已连接公网中继: {relay_url}")
+        print(f"房间: {hub.room_id}")
+    else:
+        local_ip = hub.get_local_ip()
+        print(f"\n中转服务已启动: ws://{local_ip}:{args.port}")
+
+    print(f"等待远程设备连接...\n")
+
+    try:
+        while not hub.is_client_connected:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        hub.stop()
+        print("\n已停止")
+        return
+
+    print(f"远程设备已连接: {hub.client_addr}")
+    print(f"开始自对弈...\n")
+
     start_model = preset.get("start_model_path", "models/start.onnx") if args.preset else "models/start.onnx"
 
     loop = SelfPlayLoop(
         action_zones=action_zones,
         bc_model_dir=bc_model,
         output_dir=output,
+        hub=hub,
         reward_config=reward_config,
         start_model_path=start_model,
         lr=dqn_params.get("lr", args.lr),
@@ -266,7 +304,6 @@ def cmd_self_play(args):
     loop.start()
 
     try:
-        import time
         while loop.is_running:
             time.sleep(5)
             s = loop.stats
@@ -279,6 +316,7 @@ def cmd_self_play(args):
         pass
 
     loop.stop()
+    hub.stop()
     print(f"\n自对弈结束! 模型保存至: {args.output}")
 
 
@@ -336,12 +374,16 @@ def main():
     p_exp.add_argument("--mix-ratio", type=float, default=0.3, help="原始数据混入比例 (默认: 0.3)")
     p_exp.add_argument("-o", "--output", default="runs/workshop", help="输出目录")
 
-    # self-play 子命令（RL 自对弈）
-    p_sp = sub.add_parser("self-play", help="RL 自对弈学习（可从 BC 模型热启动）")
+    # self-play 子命令（RL 自对弈 — 通过 RemoteHub 连接远程设备）
+    p_sp = sub.add_parser("self-play", help="RL 自对弈学习（通过 RemoteHub 连接远程设备）")
     p_sp.add_argument("-p", "--preset", default="", help="游戏预设 (wzry/moba) 或 YAML 文件路径")
     p_sp.add_argument("-z", "--zones", default="", help="触控区域 JSON 文件路径")
     p_sp.add_argument("--bc-model", default="", help="BC 预训练模型目录（热启动）")
     p_sp.add_argument("-o", "--output", default="runs/selfplay/exp1", help="输出目录")
+    p_sp.add_argument("--port", type=int, default=9876, help="中转服务端口 (默认: 9876)")
+    p_sp.add_argument("--relay", default="", help="公网中继地址 (如 ws://my-server:9877)")
+    p_sp.add_argument("--room", default="", help="中继房间 ID (留空自动生成)")
+    p_sp.add_argument("--token", default="", help="中继 token (可选)")
     p_sp.add_argument("--fps", type=int, default=5, help="决策帧率 (默认: 5)")
     p_sp.add_argument("--lr", type=float, default=0.0005, help="学习率")
     p_sp.add_argument("--gamma", type=float, default=0.99, help="折扣因子")

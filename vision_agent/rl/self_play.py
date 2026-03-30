@@ -50,7 +50,7 @@ class SelfPlayLoop:
         action_zones: list[dict],
         bc_model_dir: str = "",
         output_dir: str = "runs/selfplay/exp1",
-        device_serial: str = "",
+        hub=None,
         reward_config: RewardConfig | None = None,
         start_model_path: str = "models/start.onnx",
         # DQN 超参
@@ -78,10 +78,10 @@ class SelfPlayLoop:
         self._on_log = on_log
         self._on_stats = on_stats
 
-        # 游戏环境
+        # 游戏环境（通过 RemoteHub 获取画面和发送指令）
         self._env = GameEnvironment(
             action_zones=action_zones,
-            device_serial=device_serial,
+            hub=hub,
             reward_config=reward_config,
             start_model_path=start_model_path,
             fps=fps,

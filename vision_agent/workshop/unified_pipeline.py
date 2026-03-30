@@ -86,7 +86,7 @@ class UnifiedPipeline(LoggingMixin):
             recording_dirs=["recordings/session1"],  # 人类录制（可选）
             extra_videos=["video1.mp4"],             # 额外视频（可选）
             description="王者荣耀5v5",
-            device_serial="xxx",                     # 手机设备（可选，用于RL）
+            hub=my_hub,                              # RemoteHub（可选，用于RL）
         )
     """
 
@@ -182,7 +182,7 @@ class UnifiedPipeline(LoggingMixin):
         description: str = "",
         knowledge: str = "",
         epochs: int = 100,
-        device_serial: str = "",
+        hub=None,
         selfplay_preset: str = "",
         selfplay_episodes: int = 0,
         confidence_threshold: float = 0.85,
@@ -271,7 +271,7 @@ class UnifiedPipeline(LoggingMixin):
                 description=description,
                 epochs=epochs,
                 knowledge=knowledge,
-                rl_steps=selfplay_episodes if device_serial else 0,
+                rl_steps=selfplay_episodes if hub else 0,
             )
 
             result.phase_history.append({
@@ -508,11 +508,11 @@ class UnifiedPipeline(LoggingMixin):
         # ────────────────────────────────────
         #  Phase 3: 自我实践 (RL) + 经验蒸馏回 BC
         # ────────────────────────────────────
-        if device_serial and selfplay_preset and selfplay_episodes > 0 and not self._stop:
+        if hub and selfplay_preset and selfplay_episodes > 0 and not self._stop:
             self._set_phase(LearningPhase.PRACTICE)
             self._emit_log("=" * 50)
             self._emit_log("Phase 3: 自我实践（自对弈 RL → 经验蒸馏 → BC 重训练）")
-            self._emit_log(f"  设备: {device_serial}")
+            self._emit_log(f"  远程设备: {hub.client_addr}")
             self._emit_log(f"  预设: {selfplay_preset}")
             self._emit_log(f"  热启动模型: {model_dir or '无（从零开始）'}")
             self._emit_log(f"  对局数: {selfplay_episodes}")
@@ -520,7 +520,7 @@ class UnifiedPipeline(LoggingMixin):
             distill_result = self._rl_and_distill(
                 model_dir=model_dir,
                 actions=actions,
-                device_serial=device_serial,
+                hub=hub,
                 selfplay_preset=selfplay_preset,
                 selfplay_episodes=selfplay_episodes,
                 epochs=epochs,
@@ -540,19 +540,18 @@ class UnifiedPipeline(LoggingMixin):
                 model_dir = distill_result["model_dir"]
                 self._emit_log(f"  RL 蒸馏完成，最终模型: {model_dir}")
 
-        elif device_serial and selfplay_preset:
-            # 有设备但未指定对局数 → 记录配置供手动启动
+        elif hub and selfplay_preset:
             result.coach_advice["rl_ready"] = {
-                "device": device_serial,
+                "hub": hub.client_addr,
                 "preset": selfplay_preset,
                 "bc_model": model_dir,
                 "episodes": selfplay_episodes,
             }
             self._emit_log("─" * 30)
             self._emit_log("[提示] 未指定自对弈对局数，可在 Agent 面板手动启动 RL。")
-        elif not device_serial:
+        elif not hub:
             self._emit_log("─" * 30)
-            self._emit_log("[提示] 未连接设备，跳过自对弈实践。连接手机后可在训练工坊启动 RL。")
+            self._emit_log("[提示] 未连接远程设备，跳过自对弈实践。连接设备后可在训练工坊启动 RL。")
 
         # ────────────────────────────────────
         #  完成
@@ -740,7 +739,7 @@ class UnifiedPipeline(LoggingMixin):
         self,
         model_dir: str,
         actions: list[str],
-        device_serial: str,
+        hub,
         selfplay_preset: str,
         selfplay_episodes: int,
         epochs: int,
@@ -779,7 +778,7 @@ class UnifiedPipeline(LoggingMixin):
             action_zones=action_zones,
             bc_model_dir=model_dir,
             output_dir=rl_output,
-            device_serial=device_serial,
+            hub=hub,
             reward_config=preset.get("reward_config"),
             start_model_path=preset.get("start_model_path", "models/start.onnx"),
             max_episodes=selfplay_episodes,

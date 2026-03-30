@@ -168,6 +168,23 @@ class RemoteHub:
     def send_mouse_move(self, x: int, y: int):
         self.send_command({"cmd": "mouse_move", "x": x, "y": y})
 
+    def send_tap(self, x: int, y: int):
+        """发送点击指令（兼容 PC mouse_click 和 Android tap）。"""
+        self.send_command({"cmd": "mouse_click", "x": x, "y": y})
+
+    def send_swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300):
+        """发送滑动指令（Android 原生支持，PC 端可忽略）。"""
+        self.send_command({
+            "cmd": "swipe",
+            "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+            "duration": duration_ms,
+        })
+
+    @property
+    def screen_size(self) -> tuple[int, int]:
+        """从客户端 meta 获取屏幕分辨率 (width, height)。"""
+        return self._meta.get("width", 0), self._meta.get("height", 0)
+
     def get_local_ip(self) -> str:
         """获取本机局域网 IP。"""
         try:
