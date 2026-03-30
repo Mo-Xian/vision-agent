@@ -103,12 +103,12 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.2'
 
       - name: Build Android APK
         working-directory: android
-        run: |
-          chmod +x gradlew 2>/dev/null || true
-          gradle assembleRelease assembleDebug
+        run: gradle assembleRelease assembleDebug
 
       - name: Copy APK
         run: |
