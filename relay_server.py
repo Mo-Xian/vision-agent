@@ -188,16 +188,63 @@ async def main(host: str, port: int, token: str):
         await asyncio.Future()  # run forever
 
 
-if __name__ == "__main__":
+def load_config() -> dict:
+    """加载配置：优先命令行参数，其次 relay_config.json，最后默认值。"""
+    import os
+
+    defaults = {"host": "0.0.0.0", "port": 9877, "token": ""}
+
+    # 读取配置文件（与 EXE/脚本同目录）
+    config_path = os.path.join(
+        os.path.dirname(os.path.abspath(sys.argv[0] if sys.argv[0] else __file__)),
+        "relay_config.json",
+    )
+    file_config = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                file_config = json.load(f)
+            log.info(f"Loaded config from {config_path}")
+        except Exception as e:
+            log.warning(f"Failed to load {config_path}: {e}")
+    else:
+        # 首次运行：生成默认配置文件，方便用户编辑
+        try:
+            sample = {"host": "0.0.0.0", "port": 9877, "token": "change_me"}
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(sample, f, indent=2, ensure_ascii=False)
+            log.info(f"Generated default config: {config_path}")
+            log.info(f"Edit relay_config.json to set your token, then restart.")
+        except Exception:
+            pass
+
+    # 命令行参数覆盖
     parser = argparse.ArgumentParser(
         description="Vision Agent Relay - lightweight WebSocket room forwarder"
     )
-    parser.add_argument("--host", default="0.0.0.0", help="bind host (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=9877, help="bind port (default: 9877)")
-    parser.add_argument("--token", default="", help="optional auth token (clients must match)")
+    parser.add_argument("--host", default=None, help="bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=None, help="bind port (default: 9877)")
+    parser.add_argument("--token", default=None, help="auth token (clients must match)")
     args = parser.parse_args()
 
+    # 合并：默认值 < 配置文件 < 命令行
+    result = {**defaults, **file_config}
+    if args.host is not None:
+        result["host"] = args.host
+    if args.port is not None:
+        result["port"] = args.port
+    if args.token is not None:
+        result["token"] = args.token
+
+    return result
+
+
+if __name__ == "__main__":
+    import sys
+
+    config = load_config()
+
     try:
-        asyncio.run(main(args.host, args.port, args.token))
+        asyncio.run(main(config["host"], config["port"], config["token"]))
     except KeyboardInterrupt:
         log.info("Relay server stopped")
