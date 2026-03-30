@@ -1,7 +1,5 @@
-"""Agent 部署面板：手机连接 → 模型加载 → Agent 接管 → 实时画面。"""
+"""Agent 部署面板：设备连接 → 模型加载 → Agent 接管 → 实时画面。"""
 
-import subprocess
-import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, QTimer
@@ -58,62 +56,12 @@ class SelfPlayPanel(QWidget):
         target_row.addWidget(QLabel("目标"))
         self.target_combo = QComboBox()
         self.target_combo.addItems([
-            "手机（scrcpy + ADB 触控）",
             "PC（窗口捕获 + 键鼠）",
-            "远程 PC（WebSocket 连接）",
+            "远程设备（PC / 手机客户端）",
         ])
         self.target_combo.currentIndexChanged.connect(self._on_target_changed)
         target_row.addWidget(self.target_combo, 1)
         tg.addLayout(target_row)
-
-        # -- 手机控件 --
-        self.mobile_target_widget = QWidget()
-        mob_layout = QVBoxLayout(self.mobile_target_widget)
-        mob_layout.setContentsMargins(0, 0, 0, 0)
-        mob_layout.setSpacing(4)
-
-        dev_row = QHBoxLayout()
-        dev_row.addWidget(QLabel("设备"))
-        self.device_combo = QComboBox()
-        self.device_combo.setEditable(True)
-        self.device_combo.setPlaceholderText("自动检测或输入序列号")
-        dev_row.addWidget(self.device_combo, 1)
-        self.refresh_device_btn = QPushButton("刷新")
-        self.refresh_device_btn.setObjectName("browseBtn")
-        self.refresh_device_btn.setMaximumWidth(50)
-        dev_row.addWidget(self.refresh_device_btn)
-        mob_layout.addLayout(dev_row)
-
-        wifi_row = QHBoxLayout()
-        wifi_row.addWidget(QLabel("WiFi"))
-        self.wifi_ip_input = QLineEdit()
-        self.wifi_ip_input.setPlaceholderText("手机 IP，如 192.168.1.50")
-        wifi_row.addWidget(self.wifi_ip_input, 1)
-        wifi_row.addWidget(QLabel(":"))
-        self.wifi_port_input = QSpinBox()
-        self.wifi_port_input.setRange(1, 65535)
-        self.wifi_port_input.setValue(5555)
-        self.wifi_port_input.setMaximumWidth(70)
-        wifi_row.addWidget(self.wifi_port_input)
-        self.wifi_connect_btn = QPushButton("连接")
-        self.wifi_connect_btn.setObjectName("browseBtn")
-        self.wifi_connect_btn.setMaximumWidth(50)
-        self.wifi_connect_btn.clicked.connect(self._wifi_connect_device)
-        wifi_row.addWidget(self.wifi_connect_btn)
-        mob_layout.addLayout(wifi_row)
-
-        status_row = QHBoxLayout()
-        self.device_status = QLabel("未连接")
-        self.device_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        status_row.addWidget(self.device_status)
-        status_row.addStretch()
-        self.check_device_btn = QPushButton("测试连接")
-        self.check_device_btn.setObjectName("infoBtn")
-        self.check_device_btn.setMaximumWidth(80)
-        status_row.addWidget(self.check_device_btn)
-        mob_layout.addLayout(status_row)
-
-        tg.addWidget(self.mobile_target_widget)
 
         # -- PC 控件 --
         self.pc_target_widget = QWidget()
@@ -140,7 +88,6 @@ class SelfPlayPanel(QWidget):
         pc_layout.addWidget(pc_hint)
 
         tg.addWidget(self.pc_target_widget)
-        self.pc_target_widget.setVisible(False)
 
         # -- 远程 PC 控件 --
         self.remote_target_widget = QWidget()
@@ -283,7 +230,7 @@ class SelfPlayPanel(QWidget):
         self.screen_display.setText("未连接设备")
         right_layout.addWidget(self.screen_display, 1)
 
-        self.screen_info = QLabel("画面来自 scrcpy/游戏窗口截取，Agent 接管后自动显示")
+        self.screen_info = QLabel("画面来自游戏窗口截取或远程客户端推送，Agent 接管后自动显示")
         self.screen_info.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
         self.screen_info.setWordWrap(True)
         right_layout.addWidget(self.screen_info)
@@ -297,8 +244,6 @@ class SelfPlayPanel(QWidget):
         root.addWidget(splitter)
 
     def _connect_internal(self):
-        self.refresh_device_btn.clicked.connect(self._refresh_devices)
-        self.check_device_btn.clicked.connect(self._check_device)
         self.browse_yaml_btn.clicked.connect(self._browse_yaml)
         self.browse_agent_model_btn.clicked.connect(self._browse_agent_model)
         self.agent_start_btn.clicked.connect(self.agent_start_requested)
@@ -309,19 +254,13 @@ class SelfPlayPanel(QWidget):
     # ── 部署目标切换 ──
 
     def _on_target_changed(self, index: int):
-        self.mobile_target_widget.setVisible(index == 0)
-        self.pc_target_widget.setVisible(index == 1)
-        self.remote_target_widget.setVisible(index == 2)
+        self.pc_target_widget.setVisible(index == 0)
+        self.remote_target_widget.setVisible(index == 1)
         if index == 0:
-            self._refresh_devices()
-        elif index == 1:
             self._refresh_window_list()
 
-    def is_mobile_target(self) -> bool:
-        return self.target_combo.currentIndex() == 0
-
     def is_remote_target(self) -> bool:
-        return self.target_combo.currentIndex() == 2
+        return self.target_combo.currentIndex() == 1
 
     def get_agent_hub(self):
         """返回当前 Agent 中转服务 RemoteHub 实例。"""
@@ -381,158 +320,6 @@ class SelfPlayPanel(QWidget):
         if idx >= 0:
             self.window_combo.setCurrentIndex(idx)
 
-    # ── 设备管理 ──
-
-    @staticmethod
-    def _find_adb() -> str | None:
-        """查找 adb 可执行文件路径。"""
-        import shutil
-        path = shutil.which("adb")
-        if path:
-            return path
-        candidates = [
-            Path.home() / "AppData/Local/Android/Sdk/platform-tools/adb.exe",
-            Path("C:/platform-tools/adb.exe"),
-        ]
-        for c in candidates:
-            if c.exists():
-                return str(c)
-        return None
-
-    def _adb_cmd(self, *args) -> list[str]:
-        """构造 adb 命令，自动查找 adb 路径。"""
-        adb = self._find_adb()
-        if not adb:
-            raise FileNotFoundError("adb")
-        cmd = [adb]
-        serial = self.get_device_serial()
-        if serial:
-            cmd.extend(["-s", serial])
-        cmd.extend(args)
-        return cmd
-
-    def _get_device_model(self, adb: str, serial: str) -> str:
-        """获取设备型号和分辨率。"""
-        try:
-            r = subprocess.run(
-                [adb, "-s", serial, "shell", "getprop", "ro.product.model"],
-                capture_output=True, text=True, timeout=3,
-            )
-            model = r.stdout.strip() or "未知型号"
-        except Exception:
-            model = "未知型号"
-
-        try:
-            r = subprocess.run(
-                [adb, "-s", serial, "shell", "wm", "size"],
-                capture_output=True, text=True, timeout=3,
-            )
-            m = re.search(r"(\d+x\d+)", r.stdout)
-            resolution = m.group(1) if m else ""
-        except Exception:
-            resolution = ""
-
-        parts = [model]
-        if resolution:
-            parts.append(resolution)
-        return " | ".join(parts)
-
-    def _refresh_devices(self):
-        """刷新 ADB 设备列表，显示序列号 + 型号 + 分辨率。"""
-        self.device_combo.clear()
-        try:
-            adb = self._find_adb()
-            if not adb:
-                raise FileNotFoundError("adb")
-            r = subprocess.run(
-                [adb, "devices"], capture_output=True, text=True, timeout=5,
-            )
-            lines = [
-                l for l in r.stdout.strip().split("\n")[1:]
-                if l.strip() and "device" in l
-            ]
-            for line in lines:
-                serial = line.split()[0]
-                info = self._get_device_model(adb, serial)
-                self.device_combo.addItem(f"{serial} ({info})", serial)
-            if lines:
-                self.device_status.setText(f"发现 {len(lines)} 个设备")
-                self.device_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
-            else:
-                self.device_status.setText("未发现设备，请通过 USB 或 WiFi 连接手机")
-                self.device_status.setStyleSheet(f"color: {COLORS['warning']}; font-size: 11px;")
-        except FileNotFoundError:
-            self.device_status.setText(
-                "未找到 adb，请运行: winget install Google.PlatformTools 然后重启程序"
-            )
-            self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-        except Exception as e:
-            self.device_status.setText(f"错误: {e}")
-            self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-
-    def _wifi_connect_device(self):
-        """通过 WiFi 连接 ADB 设备。"""
-        ip = self.wifi_ip_input.text().strip()
-        if not ip:
-            self.device_status.setText("请输入手机 IP 地址")
-            self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-            return
-
-        port = self.wifi_port_input.value()
-        addr = f"{ip}:{port}"
-        self.device_status.setText(f"正在连接 {addr}...")
-        self.device_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        self.wifi_connect_btn.setEnabled(False)
-
-        import threading
-
-        def _connect():
-            try:
-                adb = self._find_adb()
-                if not adb:
-                    self.device_status.setText("未找到 adb")
-                    self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-                    return
-                r = subprocess.run(
-                    [adb, "connect", addr],
-                    capture_output=True, text=True, timeout=10,
-                )
-                output = r.stdout.strip() + r.stderr.strip()
-                if "connected" in output.lower():
-                    self.device_status.setText(f"WiFi 连接成功: {addr}")
-                    self.device_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
-                    self._refresh_devices()
-                else:
-                    self.device_status.setText(f"连接失败: {output}")
-                    self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-            except Exception as e:
-                self.device_status.setText(f"连接失败: {e}")
-                self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-            finally:
-                self.wifi_connect_btn.setEnabled(True)
-
-        threading.Thread(target=_connect, daemon=True).start()
-
-    def _check_device(self):
-        """测试设备连接。"""
-        try:
-            cmd = self._adb_cmd("shell", "wm", "size")
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            if r.returncode == 0 and "x" in r.stdout:
-                self.device_status.setText(f"连接成功: {r.stdout.strip()}")
-                self.device_status.setStyleSheet(f"color: {COLORS['success']}; font-size: 11px;")
-            else:
-                self.device_status.setText("连接失败，请检查设备 USB 调试是否开启")
-                self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-        except FileNotFoundError:
-            self.device_status.setText(
-                "未找到 adb，请运行: winget install Google.PlatformTools 然后重启程序"
-            )
-            self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-        except Exception as e:
-            self.device_status.setText(f"连接失败: {e}")
-            self.device_status.setStyleSheet(f"color: {COLORS['danger']}; font-size: 11px;")
-
     def _browse_yaml(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "选择预设 YAML", "profiles",
@@ -549,12 +336,6 @@ class SelfPlayPanel(QWidget):
             self.agent_model_path.setText(dlg.selected_path())
 
     # ── 公共接口 ──
-
-    def get_device_serial(self) -> str:
-        data = self.device_combo.currentData()
-        if data:
-            return data
-        return self.device_combo.currentText().strip()
 
     def get_preset_name(self) -> str:
         custom = self.custom_yaml.text().strip()
@@ -574,7 +355,6 @@ class SelfPlayPanel(QWidget):
         self.agent_start_btn.setEnabled(not running)
         self.agent_stop_btn.setEnabled(running)
         self.target_combo.setEnabled(not running)
-        self.device_combo.setEnabled(not running)
         self.window_combo.setEnabled(not running)
         self.preset_combo.setEnabled(not running)
         if running:

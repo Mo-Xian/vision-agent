@@ -322,7 +322,7 @@ class MainWindow(QMainWindow):
             rec_dir = f"recordings/{_time.strftime('%Y%m%d_%H%M%S')}"
 
         if wp.is_remote_source():
-            # 远程 PC 录制（通过中转服务）
+            # 远程录制（通过中转服务，支持 PC 客户端和手机 App）
             hub = wp.get_hub()
             if not hub or not hub.is_running:
                 self._log("[录制] 请先启动中转服务")
@@ -339,23 +339,6 @@ class MainWindow(QMainWindow):
             self._recorder.start()
             wp.set_recording_state(True)
             self._log(f"[录制] 远程录制开始（客户端: {hub.client_addr}）...")
-        elif wp.is_mobile_source():
-            # 手机录制
-            from ..data.mobile_recorder import MobileRecorder
-            device = wp.get_mobile_device()
-            zone_preset = wp.get_touch_zone_preset()
-            touch_zones = MobileRecorder.create_default_zones(zone_preset) if zone_preset else None
-
-            self._recorder = MobileRecorder(
-                output_dir=rec_dir,
-                fps=10,
-                touch_zones=touch_zones,
-                adb_device=device,
-                on_log=lambda msg: self._learn_log.emit(msg),
-            )
-            self._recorder.start()
-            wp.set_recording_state(True)
-            self._log(f"[录制] 手机录制开始 (设备: {device or '自动'})...")
         else:
             # PC 录制
             from ..data.game_recorder import GameRecorder
@@ -386,7 +369,7 @@ class MainWindow(QMainWindow):
         def _save():
             try:
                 stats = recorder.stop()
-                # 兼容 PC (GameRecordingStats) 和手机 (MobileRecordingStats)
+                # 兼容不同 RecordingStats 类型
                 total_events = getattr(stats, "total_events", 0) or getattr(stats, "total_touch_events", 0)
                 self._recording_done.emit(
                     stats.output_dir,
@@ -448,8 +431,6 @@ class MainWindow(QMainWindow):
             wp.current_scene.status = "training"
             wp.current_scene.save()
 
-        # 获取自对弈配置（如果有设备连接）
-        device_serial = self.selfplay_panel.get_device_serial()
         sp_config = wp.get_selfplay_config()
 
         self._learner = UnifiedPipeline(
@@ -471,7 +452,6 @@ class MainWindow(QMainWindow):
             "description": wp.description_input.text().strip(),
             "epochs": wp.epochs_spin.value(),
             "knowledge": wp.knowledge_input.toPlainText().strip(),
-            "device_serial": device_serial,
             "selfplay_preset": sp_config.get("preset", ""),
             "selfplay_episodes": sp_config.get("max_episodes", 0),  # from selfplay_episodes_spin
             "video_sources": vs_config.get("video_sources", []),
@@ -528,14 +508,7 @@ class MainWindow(QMainWindow):
             return
 
         preset_name = sp.get_preset_name()
-        is_mobile = sp.is_mobile_target()
-
         is_remote = sp.is_remote_target()
-
-        if is_mobile:
-            device_serial = sp.get_device_serial()
-        else:
-            device_serial = ""
 
         sp.set_agent_running_state(True)
         self._agent_running = True
@@ -554,8 +527,6 @@ class MainWindow(QMainWindow):
                         self._selfplay_log.emit("[Agent 错误] 中转服务已启动，但尚无远程客户端连接")
                         return
                     self._run_agent_remote(model_dir, preset, hub)
-                elif is_mobile:
-                    self._run_agent_mobile(model_dir, preset, device_serial)
                 else:
                     window_title = sp.get_window_title()
                     self._run_agent_pc(model_dir, preset, window_title)
@@ -571,48 +542,8 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, lambda: sp.set_agent_running_state(False))
 
         threading.Thread(target=_run, daemon=True).start()
-        target_info = "手机" if is_mobile else "PC"
+        target_info = "远程" if is_remote else "PC"
         self._log(f"[Agent] 启动中 ({target_info})...")
-
-    def _run_agent_mobile(self, model_dir: str, preset: dict, device_serial: str):
-        """手机端 Agent：scrcpy 截屏 + ADB 触控。自动检测模型类型。"""
-        # 检测模型类型
-        model_type = self._detect_model_type(model_dir)
-
-        if model_type == "e2e_mlp":
-            from ..decision.e2e_engine import E2EEngine
-            self._dqn_engine = E2EEngine(model_dir=model_dir)
-            engine_label = "BC (E2E)"
-        else:
-            from ..decision.dqn_engine import DQNEngine
-            self._dqn_engine = DQNEngine(
-                model_dir=model_dir,
-                touch_zones=preset.get("action_zones", []),
-                device_serial=device_serial,
-                execute_actions=True,
-            )
-            engine_label = "DQN"
-        self._dqn_engine.on_start()
-
-        self._selfplay_log.emit(f"[Agent] 模型加载完成: {model_dir} ({engine_label})")
-        self._selfplay_log.emit("[Agent] 手机模式：scrcpy 截屏 + ADB 触控")
-
-        import time
-        while self._agent_running:
-            frame = self._capture_scrcpy_frame()
-            if frame is None:
-                time.sleep(0.5)
-                continue
-
-            self._selfplay_frame.emit(frame)
-            actions = self._dqn_engine.decide(embedding=frame)
-            if actions:
-                action = actions[0]
-                if action.name != "idle":
-                    self._selfplay_log.emit(
-                        f"[Agent] {action.name} (conf={action.confidence:.2f}) {action.reason}"
-                    )
-            time.sleep(0.2)
 
     def _run_agent_pc(self, model_dir: str, preset: dict, window_title: str):
         """PC 端 Agent：窗口捕获 + 键鼠模拟。"""
@@ -735,7 +666,7 @@ class MainWindow(QMainWindow):
         self._selfplay_log.emit("[Agent] 正在停止...")
 
     def _start_agent_frame_capture(self):
-        """Agent 模式的帧捕获（复用 scrcpy 窗口）。"""
+        """Agent 模式的帧捕获。"""
         pass  # Agent 循环内直接发送帧，无需额外定时器
 
     @staticmethod
@@ -749,23 +680,6 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         return "e2e_mlp"
-
-    def _capture_scrcpy_frame(self):
-        """从 scrcpy 窗口截取一帧。"""
-        try:
-            from ..data.game_recorder import GameRecorder
-            region = GameRecorder._find_window("scrcpy")
-            if not region:
-                return None
-            import mss
-            import cv2
-            import numpy as np
-            with mss.mss() as sct:
-                img = sct.grab(region)
-                frame = np.array(img)
-                return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        except Exception:
-            return None
 
     # ================================================================
     #  LLM 设置

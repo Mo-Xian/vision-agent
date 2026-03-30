@@ -187,8 +187,7 @@ class WorkshopPanel(QWidget):
         self.source_combo = QComboBox()
         self.source_combo.addItems([
             "PC（窗口捕获 + 键鼠）",
-            "手机（scrcpy + ADB 触控）",
-            "远程 PC（WebSocket 连接）",
+            "远程设备（PC / 手机客户端）",
         ])
         self.source_combo.currentIndexChanged.connect(self._on_source_changed)
         source_row.addWidget(self.source_combo, 1)
@@ -222,58 +221,7 @@ class WorkshopPanel(QWidget):
         pc_layout.addLayout(win_row)
         rec_layout.addWidget(self.pc_source_widget)
 
-        # -- 手机模式控件 --
-        self.mobile_source_widget = QWidget()
-        mob_layout = QVBoxLayout(self.mobile_source_widget)
-        mob_layout.setContentsMargins(0, 0, 0, 0)
-        mob_layout.setSpacing(4)
-
-        dev_row = QHBoxLayout()
-        dev_row.addWidget(QLabel("设备"))
-        self.mobile_device_combo = QComboBox()
-        self.mobile_device_combo.setEditable(True)
-        self.mobile_device_combo.setPlaceholderText("自动检测或输入序列号")
-        dev_row.addWidget(self.mobile_device_combo, 1)
-        self.refresh_devices_btn = QPushButton("刷新")
-        self.refresh_devices_btn.setObjectName("browseBtn")
-        self.refresh_devices_btn.setMaximumWidth(50)
-        self.refresh_devices_btn.clicked.connect(self._refresh_device_list)
-        dev_row.addWidget(self.refresh_devices_btn)
-        mob_layout.addLayout(dev_row)
-
-        wifi_row = QHBoxLayout()
-        wifi_row.addWidget(QLabel("WiFi"))
-        self.mobile_wifi_ip = QLineEdit()
-        self.mobile_wifi_ip.setPlaceholderText("手机 IP，如 192.168.1.50")
-        wifi_row.addWidget(self.mobile_wifi_ip, 1)
-        wifi_row.addWidget(QLabel(":"))
-        self.mobile_wifi_port = QSpinBox()
-        self.mobile_wifi_port.setRange(1, 65535)
-        self.mobile_wifi_port.setValue(5555)
-        self.mobile_wifi_port.setMaximumWidth(70)
-        wifi_row.addWidget(self.mobile_wifi_port)
-        self.mobile_wifi_connect_btn = QPushButton("连接")
-        self.mobile_wifi_connect_btn.setObjectName("browseBtn")
-        self.mobile_wifi_connect_btn.setMaximumWidth(50)
-        self.mobile_wifi_connect_btn.clicked.connect(self._wifi_connect_device)
-        wifi_row.addWidget(self.mobile_wifi_connect_btn)
-        mob_layout.addLayout(wifi_row)
-
-        zone_row = QHBoxLayout()
-        zone_row.addWidget(QLabel("触控预设"))
-        self.touch_zone_combo = QComboBox()
-        self.touch_zone_combo.addItems(["moba - MOBA 手游", "fps - FPS 手游", "无 - 自动检测"])
-        zone_row.addWidget(self.touch_zone_combo, 1)
-        mob_layout.addLayout(zone_row)
-
-        self.mobile_status = QLabel("")
-        self.mobile_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        mob_layout.addWidget(self.mobile_status)
-
-        rec_layout.addWidget(self.mobile_source_widget)
-        self.mobile_source_widget.setVisible(False)
-
-        # -- 远程 PC 模式控件 --
+        # -- 远程设备模式控件 --
         self.remote_source_widget = QWidget()
         remote_layout = QVBoxLayout(self.remote_source_widget)
         remote_layout.setContentsMargins(0, 0, 0, 0)
@@ -572,23 +520,16 @@ class WorkshopPanel(QWidget):
 
     def _on_source_changed(self, index: int):
         self.pc_source_widget.setVisible(index == 0)
-        self.mobile_source_widget.setVisible(index == 1)
-        self.remote_source_widget.setVisible(index == 2)
+        self.remote_source_widget.setVisible(index == 1)
         if index == 0:
             self.rec_info.setText("录制你的游戏操作，自动生成训练数据。F9 暂停/恢复。")
-        elif index == 1:
-            self.rec_info.setText("录制手机游戏操作（scrcpy 投屏 + ADB 触摸采集）。需要 USB 调试。")
-            self._refresh_device_list()
         else:
             self.rec_info.setText(
-                "启动中转服务后，远程 PC 运行客户端连接即可录制。"
+                "启动中转服务后，远程设备（PC 客户端或手机 App）连接即可录制。"
             )
 
-    def is_mobile_source(self) -> bool:
-        return self.source_combo.currentIndex() == 1
-
     def is_remote_source(self) -> bool:
-        return self.source_combo.currentIndex() == 2
+        return self.source_combo.currentIndex() == 1
 
     def get_hub_port(self) -> int:
         """返回中转服务端口。"""
@@ -626,81 +567,6 @@ class WorkshopPanel(QWidget):
         self.start_hub_btn.setEnabled(True)
         self.stop_hub_btn.setEnabled(False)
         self.remote_port_spin.setEnabled(True)
-
-    def get_mobile_device(self) -> str:
-        data = self.mobile_device_combo.currentData()
-        if data:
-            return data
-        return self.mobile_device_combo.currentText().strip()
-
-    def get_touch_zone_preset(self) -> str:
-        text = self.touch_zone_combo.currentText()
-        preset = text.split(" - ")[0].strip()
-        return "" if preset == "无" else preset
-
-    def _refresh_device_list(self):
-        self.mobile_device_combo.clear()
-        try:
-            import subprocess
-            r = subprocess.run(
-                ["adb", "devices", "-l"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for line in r.stdout.strip().split("\n")[1:]:
-                if not line.strip() or "device" not in line:
-                    continue
-                parts = line.split()
-                serial = parts[0]
-                info = " ".join(parts[2:]) if len(parts) > 2 else ""
-                self.mobile_device_combo.addItem(f"{serial} ({info})" if info else serial, serial)
-            count = self.mobile_device_combo.count()
-            self.mobile_status.setText(f"检测到 {count} 个设备" if count else "未检测到设备，请检查 USB 或 WiFi 连接")
-        except FileNotFoundError:
-            self.mobile_status.setText("未找到 adb，请安装 Android SDK Platform Tools")
-        except Exception as e:
-            self.mobile_status.setText(f"检测失败: {e}")
-
-    def _wifi_connect_device(self):
-        """通过 WiFi 连接 ADB 设备。"""
-        ip = self.mobile_wifi_ip.text().strip()
-        if not ip:
-            self.mobile_status.setText("请输入手机 IP 地址")
-            self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
-            return
-
-        port = self.mobile_wifi_port.value()
-        addr = f"{ip}:{port}"
-        self.mobile_status.setText(f"正在连接 {addr}...")
-        self.mobile_status.setStyleSheet(f"color: {COLORS['text_dim']}; font-size: 11px;")
-        self.mobile_wifi_connect_btn.setEnabled(False)
-
-        import threading
-
-        def _connect():
-            import subprocess
-            try:
-                r = subprocess.run(
-                    ["adb", "connect", addr],
-                    capture_output=True, text=True, timeout=10,
-                )
-                output = r.stdout.strip() + r.stderr.strip()
-                if "connected" in output.lower():
-                    self.mobile_status.setText(f"WiFi 连接成功: {addr}")
-                    self.mobile_status.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px;")
-                    self._refresh_device_list()
-                else:
-                    self.mobile_status.setText(f"连接失败: {output}")
-                    self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
-            except FileNotFoundError:
-                self.mobile_status.setText("未找到 adb，请安装 Android SDK Platform Tools")
-                self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
-            except Exception as e:
-                self.mobile_status.setText(f"连接失败: {e}")
-                self.mobile_status.setStyleSheet(f"color: {COLORS['error']}; font-size: 11px;")
-            finally:
-                self.mobile_wifi_connect_btn.setEnabled(True)
-
-        threading.Thread(target=_connect, daemon=True).start()
 
     # ── 窗口管理 ──
 
